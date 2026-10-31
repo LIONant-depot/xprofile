@@ -22,5 +22,14 @@ void Load()
 }
 ```
 
+## Tracy's viewer and capture tool
+
+Built from the same Tracy sources (a viewer must match the client's version): `build/tools/BuildTracyTools.bat <tracy source> <out>` on
+Windows (Ninja from the newest Visual Studio), `build/tools/BuildTracyTools.sh <tracy source> <out>` on Linux. Their CMake downloads their
+own libraries once (CPM cache in `<out>/cpm`). Then `<out>/profiler/tracy-profiler(.exe)` connects to a running program that has the
+profiler enabled; `<out>/capture/tracy-capture -a 127.0.0.1 -o file.tracy -s 5` records 5 seconds without a window.
+
+## Building
+
 Link the `xprofile` target (CMake: `build/dependency/CMakeLists.txt`, fetched with xcmake_tools' `FetchAndPopulate`), copy
 `xprofile.dll` next to the executable, and look at it with Tracy's viewer of the same version (v0.14.1).
