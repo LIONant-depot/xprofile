@@ -2,6 +2,10 @@
 // target) and the switch every module's macros read. See xprofile.h.
 #include "xprofile.h"
 #include <atomic>
+#include <deque>
+#include <map>
+#include <tuple>
+#include <string_view>
 #include <cstdlib>
 #include <mutex>
 #include <string>
@@ -48,6 +52,37 @@ namespace xprofile
     bool isConnected(void) noexcept
     {
         return s_bStarted.load() && tracy::GetProfiler().IsConnected();
+    }
+
+    namespace
+    {
+        // the copies (std::deque: what was handed out never moves), one per distinct site / name
+        std::mutex                                                          s_InternLock;
+        std::deque<std::string>                                             s_Strings;
+        std::deque<tracy::SourceLocationData>                               s_Locations;
+        std::map<std::tuple<std::string, std::string, std::string, std::uint32_t>, const tracy::SourceLocationData*> s_LocationOf;
+        std::map<std::string, const char*, std::less<>>                     s_NameOf;
+
+        const char* Keep(const char* p) { return s_Strings.emplace_back(p ? p : "").c_str(); }     // (s_InternLock held)
+    }
+
+    const tracy::SourceLocationData* Intern(const char* pName, const char* pFunction, const char* pFile, std::uint32_t Line) noexcept
+    {
+        std::lock_guard Lk(s_InternLock);
+        auto Key = std::make_tuple(std::string(pName ? pName : ""), std::string(pFunction ? pFunction : ""), std::string(pFile ? pFile : ""), Line);
+        if (auto It = s_LocationOf.find(Key); It != s_LocationOf.end()) return It->second;
+        const auto* p = &s_Locations.emplace_back(tracy::SourceLocationData{ Keep(pName), Keep(pFunction), Keep(pFile), Line, 0 });
+        s_LocationOf.emplace(std::move(Key), p);
+        return p;
+    }
+
+    const char* InternName(const char* pName) noexcept
+    {
+        std::lock_guard Lk(s_InternLock);
+        if (auto It = s_NameOf.find(std::string_view{ pName }); It != s_NameOf.end()) return It->second;
+        const char* p = Keep(pName);
+        s_NameOf.emplace(pName, p);
+        return p;
     }
 
     void SetThreadName(const char* pName) noexcept
