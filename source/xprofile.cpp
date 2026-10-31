@@ -1,12 +1,17 @@
 // xprofile's shared library: the one profiler client of the process (Tracy's, compiled in here: TracyClient.cpp is a source of this
 // target) and the switch every module's macros read. See xprofile.h.
 #include "xprofile.h"
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <memory>
+#include <vector>
 #include <deque>
 #include <map>
 #include <tuple>
 #include <string_view>
 #include <cstdlib>
+#include <filesystem>
 #include <mutex>
 #include <string>
 
@@ -17,6 +22,8 @@
     #include <windows.h>
 #else
     #include <pthread.h>
+    #include <sys/wait.h>
+    #include <unistd.h>
 #endif
 
 namespace xprofile
@@ -76,6 +83,11 @@ namespace xprofile
         return p;
     }
 
+    const tracy::SourceLocationData* InternDynamic(const char* pName) noexcept
+    {
+        return Intern(pName, "(run-time name)", "", 0);
+    }
+
     const char* InternName(const char* pName) noexcept
     {
         std::lock_guard Lk(s_InternLock);
@@ -99,5 +111,167 @@ namespace xprofile
         pthread_setname_np(pthread_self(), Short);
     #endif
         if (s_bStarted.load()) tracy::SetThreadName(pName);
+    }
+
+    //------------------------------------------------------------------------------
+    // The recorder: per thread a ring of the zones that ended (written by its thread only: an entry first, then the head, released; the
+    // reader takes what is below the head, acquired), the frames' ends (the thread that marks frames), the plots (a lock: they are few)
+    // ponytail: a ring entry can be overwritten while Snapshot reads it if a thread ends 16K zones meanwhile - a wrong row in a table,
+    // never a crash (plain data)
+    namespace
+    {
+        struct zone_rec { const location* m_pWhere; std::int64_t m_Start, m_End; };
+        struct thread_ring
+        {
+            static constexpr std::uint64_t  size_v = 1 << 14;
+            std::array<zone_rec, size_v>    m_Recs  {};
+            std::atomic<std::uint64_t>      m_Head  { 0 };
+        };
+        std::mutex                                  s_RingsLock;
+        std::vector<std::unique_ptr<thread_ring>>   s_Rings;                // never freed: a thread that ends leaves its zones for the window
+        thread_local thread_ring*                   t_pRing = nullptr;
+
+        constexpr int                               frames_v = 1024;
+        std::array<std::int64_t, frames_v>          s_FrameEnds {};
+        std::atomic<std::uint64_t>                  s_nFrames   { 0 };
+
+        struct plot_ring { std::array<float, 256> m_Values{}; std::uint32_t m_n = 0; double m_Last = 0; };
+        std::mutex                                  s_PlotsLock;
+        std::map<const char*, plot_ring>            s_Plots;                // by interned name
+    }
+
+    void RecordZone(const location* pWhere, std::int64_t StartNs, std::int64_t EndNs) noexcept
+    {
+        if (!pWhere) return;
+        if (!t_pRing)
+        {
+            std::lock_guard Lk(s_RingsLock);
+            t_pRing = s_Rings.emplace_back(std::make_unique<thread_ring>()).get();
+        }
+        const auto H = t_pRing->m_Head.load(std::memory_order_relaxed);
+        t_pRing->m_Recs[H & (thread_ring::size_v - 1)] = { pWhere, StartNs, EndNs };
+        t_pRing->m_Head.store(H + 1, std::memory_order_release);
+    }
+
+    void RecordFrame(void) noexcept
+    {
+        const auto n = s_nFrames.load(std::memory_order_relaxed);
+        s_FrameEnds[n % frames_v] = Now();
+        s_nFrames.store(n + 1, std::memory_order_release);
+    }
+
+    void RecordPlot(const char* pInternedName, double Value) noexcept
+    {
+        std::lock_guard Lk(s_PlotsLock);
+        auto& P = s_Plots[pInternedName];
+        P.m_Values[P.m_n++ % P.m_Values.size()] = static_cast<float>(Value);
+        P.m_Last = Value;
+    }
+
+    void ClearRecorder(void) noexcept
+    {
+        { std::lock_guard Lk(s_PlotsLock); s_Plots.clear(); }
+        s_nFrames.store(0);
+        std::lock_guard Lk(s_RingsLock);
+        for (auto& R : s_Rings) R->m_Head.store(0);       // (a thread writing meanwhile: at worst one stale entry)
+    }
+
+    void Snapshot(int nFrames, snapshot& Out) noexcept
+    {
+        Out.m_FrameMs.clear(); Out.m_Zones.clear(); Out.m_Plots.clear(); Out.m_nThreads = 0;
+
+        // the window: the last nFrames frames (their ends), or the last second when no frame was marked
+        const auto nAll = s_nFrames.load(std::memory_order_acquire);
+        const int  n    = static_cast<int>(std::min<std::uint64_t>({ nAll ? nAll - 1 : 0, static_cast<std::uint64_t>(std::max(nFrames, 1)), frames_v - 1 }));
+        std::int64_t From = Now() - 1'000'000'000, To = Now();
+        if (n > 0)
+        {
+            From = s_FrameEnds[(nAll - 1 - n) % frames_v];
+            To   = s_FrameEnds[(nAll - 1) % frames_v];
+            for (int i = n; i > 0; --i) Out.m_FrameMs.push_back(static_cast<float>((s_FrameEnds[(nAll - i) % frames_v] - s_FrameEnds[(nAll - i - 1) % frames_v]) * 1e-6));
+        }
+
+        // every thread's zones that ended in the window, summed by location
+        std::map<const location*, zone_stat> Sum;
+        {
+            std::lock_guard Lk(s_RingsLock);
+            for (auto& R : s_Rings)
+            {
+                const auto H = R->m_Head.load(std::memory_order_acquire);
+                bool bAny = false;
+                for (std::uint64_t i = H; i > 0 && H - i < thread_ring::size_v; --i)
+                {
+                    const auto& Z = R->m_Recs[(i - 1) & (thread_ring::size_v - 1)];
+                    if (Z.m_End < From) break;
+                    if (Z.m_End > To || !Z.m_pWhere) continue;
+                    auto& S = Sum[Z.m_pWhere];
+                    const double Ms = (Z.m_End - Z.m_Start) * 1e-6;
+                    S.m_pWhere = Z.m_pWhere; ++S.m_Count; S.m_TotalMs += Ms; S.m_MaxMs = std::max(S.m_MaxMs, Ms);
+                    bAny = true;
+                }
+                Out.m_nThreads += bAny;
+            }
+        }
+        for (auto& [p, S] : Sum) Out.m_Zones.push_back(S);
+        std::sort(Out.m_Zones.begin(), Out.m_Zones.end(), [](const zone_stat& A, const zone_stat& B) { return A.m_TotalMs > B.m_TotalMs; });
+
+        // the plots: the last value, the range and the history of what was kept
+        std::lock_guard Lk(s_PlotsLock);
+        for (auto& [pName, P] : s_Plots)
+        {
+            plot_stat S{ .m_pName = pName, .m_Last = P.m_Last };
+            const auto k = std::min<std::uint32_t>(P.m_n, static_cast<std::uint32_t>(P.m_Values.size()));
+            for (std::uint32_t i = P.m_n - k; i < P.m_n; ++i) S.m_History.push_back(P.m_Values[i % P.m_Values.size()]);
+            if (!S.m_History.empty()) { auto [Lo, Hi] = std::minmax_element(S.m_History.begin(), S.m_History.end()); S.m_Min = *Lo; S.m_Max = *Hi; }
+            Out.m_Plots.push_back(std::move(S));
+        }
+    }
+
+    //------------------------------------------------------------------------------
+
+    bool LaunchViewer(const char* pViewerExe) noexcept
+    {
+        // detached: the viewer outlives nothing of ours; "-a 127.0.0.1": it connects to this process at once
+    #if defined(_WIN32)
+        std::string Cmd = std::string("\"") + pViewerExe + "\" -a 127.0.0.1";
+        std::wstring WCmd(Cmd.begin(), Cmd.end());
+        STARTUPINFOW Si{ .cb = sizeof(STARTUPINFOW) };
+        PROCESS_INFORMATION Pi{};
+        if (!CreateProcessW(nullptr, WCmd.data(), nullptr, nullptr, FALSE, DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, nullptr, nullptr, &Si, &Pi)) return false;
+        CloseHandle(Pi.hThread); CloseHandle(Pi.hProcess);
+        return true;
+    #else
+        const pid_t Pid = fork();
+        if (Pid < 0) return false;
+        if (Pid == 0)
+        {
+            setsid();
+            if (fork() == 0) { execl(pViewerExe, pViewerExe, "-a", "127.0.0.1", static_cast<char*>(nullptr)); _exit(127); }
+            _exit(0);
+        }
+        int Status = 0; waitpid(Pid, &Status, 0);
+        return true;
+    #endif
+    }
+
+    std::string ViewerPath(void) noexcept
+    {
+        std::error_code Ec;
+        std::filesystem::path Exe;
+    #if defined(_WIN32)
+        wchar_t Buf[1024] = {};
+        if (GetModuleFileNameW(nullptr, Buf, 1024)) Exe = Buf;
+        const char* pName = "tracy-profiler.exe";
+    #else
+        Exe = std::filesystem::canonical("/proc/self/exe", Ec);
+        const char* pName = "tracy-profiler";
+    #endif
+        for (auto Dir = Exe.parent_path(); !Dir.empty(); Dir = Dir.parent_path())
+        {
+            for (const auto& Sub : { std::filesystem::path("Build") / "tracy" / "profiler", std::filesystem::path("tracy") / "profiler" })
+                if (auto P = Dir / Sub / pName; std::filesystem::exists(P, Ec)) return P.string();
+            if (Dir == Dir.parent_path()) break;
+        }
+        return {};
     }
 }
