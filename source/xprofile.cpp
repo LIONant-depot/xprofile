@@ -306,6 +306,18 @@ namespace xprofile
 
     void MemRegion(const char* pPool, std::uint64_t Region, std::uint64_t Size) noexcept
     {
+        if (pPool == nullptr)                                               // (a region gone: from whichever pool has it)
+        {
+            std::lock_guard Lk(s_MemLock);
+            for (auto& [pName, P] : s_Mem)
+                if (auto It = P.m_Regions.find(Region); It != P.m_Regions.end())
+                {
+                    for (auto& [Offset, A] : It->second.m_Allocs) ForgetAlloc(pName, P, Region, Offset, A);
+                    P.m_Regions.erase(It);
+                    return;
+                }
+            return;
+        }
         pPool = InternName(pPool);
         std::lock_guard Lk(s_MemLock);
         auto& P = s_Mem[pPool];

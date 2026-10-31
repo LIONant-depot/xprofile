@@ -117,7 +117,7 @@
         // allocations in them by offset. The recorder keeps them always - the map of what is allocated and what is free must be whole
         // when someone looks (meant for few, large allocations: VRAM blocks, resource loads; not every new); Tracy gets each allocation
         // made while it is connected (its memory window). Names are interned here: any string.
-        XPROFILE_API void   MemRegion   ( const char* pPool, std::uint64_t Region, std::uint64_t Size ) noexcept;     // Size 0: the region goes, with what is left in it
+        XPROFILE_API void   MemRegion   ( const char* pPool, std::uint64_t Region, std::uint64_t Size ) noexcept;     // Size 0: the region goes, with what is left in it (pPool nullptr: from whichever pool has it)
         XPROFILE_API void   MemAlloc    ( const char* pPool, std::uint64_t Region, std::uint64_t Offset, std::uint64_t Size, const char* pTag ) noexcept;
         XPROFILE_API void   MemFree     ( const char* pPool, std::uint64_t Region, std::uint64_t Offset ) noexcept;
         // Who allocates: a name for this thread's allocations while the scope lives (nested scopes: the innermost) - a resource's load sets

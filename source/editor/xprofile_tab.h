@@ -42,7 +42,7 @@ namespace xprofile::editor
             {
                 const auto Pick = [&](const char* pName) { return m_Select == pName ? ImGuiTabItemFlags_SetSelected : 0; };
                 if (ImGui::BeginTabItem("Metrics", nullptr, Pick("Metrics"))) { if (bOn) DrawMetrics(); else ImGui::TextDisabled("Record is off: no zones or plots."); ImGui::EndTabItem(); }
-                if (ImGui::BeginTabItem("Memory", nullptr, Pick("Memory")))  { DrawMemory(); ImGui::EndTabItem(); }
+                if (ImGui::BeginTabItem("Memory", nullptr, Pick("Memory") | Pick("VRAM") | Pick("System RAM")))  { DrawMemory(); ImGui::EndTabItem(); }
                 ImGui::EndTabBar();
                 m_Select.clear();
             }
@@ -135,18 +135,41 @@ namespace xprofile::editor
 
         // The memory pools (always kept, Record on or off) as one map: every pool's regions one after the other, each allocation (its
         // owner and size, in its tag's colour) and each hole (grey) in address order - the strip read top to bottom, column after column
-        // like text. Region starts: a thin line (hover: the region). Fit: all the memory in the columns; wheel: zoom around the mouse (the
+        // like text. Pools (kinds of memory: VRAM, ReBAR, shared system RAM) one after the other, each starting at a thick orange line;
+        // region starts: a thin line (hover: the pool and the region). Fit: all the memory in the columns; wheel: zoom around the mouse (the
         // strip longer); right button: scroll along it.
+        // Two address spaces, two maps: VRAM (the card's: pools named "VRAM...") and System RAM (everything else - the CPU's data and the
+        // shared memory the GPU reads over the bus). ponytail: the space by the pool's name prefix; a pool attribute if a third space comes
         void DrawMemory(void) noexcept
         {
             if (m_MemRefresh-- <= 0) { MemSnapshot(m_Mem); m_MemRefresh = 15; }
             if (m_Mem.empty()) { ImGui::TextDisabled("No memory pool reported yet."); return; }
+            if (ImGui::BeginTabBar("##spaces"))
+            {
+                for (int Space = 0; Space < 2; ++Space)
+                {
+                    const char* pSpace = Space == 0 ? "VRAM" : "System RAM";
+                    if (!ImGui::BeginTabItem(pSpace, nullptr, m_Select == pSpace ? ImGuiTabItemFlags_SetSelected : 0)) continue;
+                    std::vector<mem_pool> Pools;
+                    for (const auto& P : m_Mem) if ((std::string_view(P.m_pName).starts_with("VRAM")) == (Space == 0)) Pools.push_back(P);
+                    if (Pools.empty()) ImGui::TextDisabled("Nothing reported in this memory yet.");
+                    else DrawMemoryMap(Pools, m_MemView[Space]);
+                    ImGui::EndTabItem();
+                }
+                ImGui::EndTabBar();
+            }
+        }
+
+        struct mem_view { double m_Zoom = 1, m_Top = 0; int m_Columns = 4; };      // a map's view: 1 = all of it; its first byte shown (0..1); the strip's columns
+
+        void DrawMemoryMap(const std::vector<mem_pool>& Pools, mem_view& V) noexcept
+        {
             constexpr double MB = 1.0 / (1024.0 * 1024.0);
 
             // the totals and the legend
             std::uint64_t Total = 0;
             std::map<std::string, int> Tags;
-            for (const auto& P : m_Mem)
+            for (const auto& P : Pools)
             {
                 std::uint64_t Free = 0, Largest = 0;
                 for (const auto& R : P.m_Regions) { Free += R.m_Size - std::min(R.m_Used, R.m_Size); Largest = std::max(Largest, R.m_LargestFree); for (const auto& A : R.m_Allocs) Tags.emplace(A.m_pTag ? A.m_pTag : "?", 0); }
@@ -154,8 +177,8 @@ namespace xprofile::editor
                     P.m_pName, P.m_Used * MB, P.m_nAllocs, P.m_Reserved * MB, P.m_Regions.size(), P.m_Peak * MB, Free * MB, Largest * MB);
                 Total += P.m_Reserved;
             }
-            if (ImGui::Button("Fit")) { m_MemZoom = 1; m_MemTop = 0; }
-            ImGui::SameLine(); ImGui::SetNextItemWidth(90); ImGui::SliderInt("columns", &m_MemColumns, 1, 12);
+            if (ImGui::Button("Fit")) { V.m_Zoom = 1; V.m_Top = 0; }
+            ImGui::SameLine(); ImGui::SetNextItemWidth(90); ImGui::SliderInt("columns", &V.m_Columns, 1, 12);
             ImGui::SameLine(); ImGui::TextDisabled("(wheel: zoom, right button: scroll)");
             for (const auto& [Tag, n] : Tags)
             {
@@ -167,27 +190,27 @@ namespace xprofile::editor
             ImGui::SameLine(); ImGui::TextUnformatted("free");
             if (Total == 0) return;
 
-            // the canvas: n columns of height H; the strip's pixel p is column p / H, row p % H; m_MemTop: the first byte shown (0..1)
+            // the canvas: n columns of height H; the strip's pixel p is column p / H, row p % H; V.m_Top: the first byte shown (0..1)
             const ImVec2 C0 = ImGui::GetCursorScreenPos();
             const ImVec2 Size(std::max(ImGui::GetContentRegionAvail().x, 200.0f), std::max(ImGui::GetContentRegionAvail().y, 240.0f));
             ImGui::InvisibleButton("##memory", Size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
             const bool   bHover = ImGui::IsItemHovered();
             auto&        IO     = ImGui::GetIO();
-            const int    nCols  = std::clamp(m_MemColumns, 1, 12);
+            const int    nCols  = std::clamp(V.m_Columns, 1, 12);
             const float  Gap    = 6, ColW = (Size.x - Gap * (nCols - 1)) / nCols, H = Size.y;
             const double View   = double(nCols) * H;                                // the strip's pixels on screen
             const auto   StripAt = [&](ImVec2 M) { const int c = std::clamp(int((M.x - C0.x) / (ColW + Gap)), 0, nCols - 1); return c * double(H) + std::clamp(double(M.y - C0.y), 0.0, double(H)); };
             if (bHover && IO.MouseWheel != 0)
             {
-                const double OldPx = View * m_MemZoom / double(Total);
-                const double At    = m_MemTop * double(Total) + StripAt(IO.MousePos) / OldPx;      // the byte under the mouse stays there
-                m_MemZoom = std::clamp(m_MemZoom * std::pow(1.25, IO.MouseWheel), 1.0, 1e6);
-                m_MemTop  = (At - StripAt(IO.MousePos) / (View * m_MemZoom / double(Total))) / double(Total);
+                const double OldPx = View * V.m_Zoom / double(Total);
+                const double At    = V.m_Top * double(Total) + StripAt(IO.MousePos) / OldPx;      // the byte under the mouse stays there
+                V.m_Zoom = std::clamp(V.m_Zoom * std::pow(1.25, IO.MouseWheel), 1.0, 1e6);
+                V.m_Top  = (At - StripAt(IO.MousePos) / (View * V.m_Zoom / double(Total))) / double(Total);
             }
-            const double Px  = View * m_MemZoom / double(Total);                   // pixels per byte
-            if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0)) m_MemTop -= IO.MouseDelta.y / Px / double(Total);
-            m_MemTop = std::clamp(m_MemTop, 0.0, std::max(0.0, 1.0 - 1.0 / m_MemZoom));
-            const double TopB = m_MemTop * double(Total);
+            const double Px  = View * V.m_Zoom / double(Total);                   // pixels per byte
+            if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0)) V.m_Top -= IO.MouseDelta.y / Px / double(Total);
+            V.m_Top = std::clamp(V.m_Top, 0.0, std::max(0.0, 1.0 - 1.0 / V.m_Zoom));
+            const double TopB = V.m_Top * double(Total);
 
             auto* pDraw = ImGui::GetWindowDrawList();
             pDraw->PushClipRect(C0, ImVec2(C0.x + Size.x, C0.y + Size.y), true);
@@ -218,16 +241,19 @@ namespace xprofile::editor
                 }
             };
             // a region's start: a line across its column
-            const auto Line = [&](double B, ImU32 Col)
+            const auto Line = [&](double B, ImU32 Col, float Thick)
             {
                 const double P = (B - TopB) * Px;
                 if (P < 0 || P >= View) return;
                 const int c = int(P / H); const float X0 = C0.x + c * (ColW + Gap), Y = C0.y + float(P - c * double(H));
-                pDraw->AddLine(ImVec2(X0, Y), ImVec2(X0 + ColW, Y), Col, 2.0f);
+                pDraw->AddLine(ImVec2(X0, Y), ImVec2(X0 + ColW, Y), Col, Thick);
             };
 
             double R0 = 0;
-            for (const auto& P : m_Mem)
+            std::vector<double> PoolStarts;
+            for (const auto& P : Pools)
+            {
+                PoolStarts.push_back(R0);
                 for (const auto& R : P.m_Regions)
                 {
                     const std::uint64_t RFree = R.m_Size - std::min(R.m_Used, R.m_Size);
@@ -243,9 +269,11 @@ namespace xprofile::editor
                         End = std::max(End, A.m_Offset + A.m_Size);
                     }
                     if (R.m_Size > End) Seg(R0 + End, R0 + R.m_Size, IM_COL32(150, 150, 150, 255), "FREE: " + Mb(R.m_Size - End), "free: " + Mb(R.m_Size - End) + Where);
-                    Line(R0, IM_COL32(235, 235, 235, 255));
+                    Line(R0, IM_COL32(235, 235, 235, 255), 2.0f);
                     R0 += double(R.m_Size);
                 }
+            }
+            for (double B : PoolStarts) Line(B, IM_COL32(255, 150, 40, 255), 5.0f);     // a pool's start (a kind of memory: the header's lines in order)
             pDraw->PopClipRect();
             if (!Hover.empty()) ImGui::SetTooltip("%s", Hover.c_str());
         }
@@ -269,11 +297,9 @@ namespace xprofile::editor
         snapshot                m_Snap      {};
         std::vector<mem_pool>   m_Mem       {};
         int                     m_MemRefresh = 0;
-        double                  m_MemZoom    = 1;       // the memory chart's view: 1 = all of it
-        double                  m_MemTop     = 0;       // its first byte shown, 0..1 of all of it
-        int                     m_MemColumns = 4;       // the map's strip wrapped into this many columns
+        mem_view                m_MemView[2] {};        // the VRAM map's view, the System RAM map's
     #endif
-        std::string             m_Select    {};             // a sub-tab to bring forward on the next Draw ("Metrics", "Memory": Profiler -Show)
+        std::string             m_Select    {};             // a page to bring forward on the next Draw ("Metrics", "Memory", "VRAM", "System RAM": Profiler -Show)
         std::string             m_Viewer    {};
         bool                    m_bLooked   = false;
         std::string             m_Message   {};
