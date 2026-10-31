@@ -145,6 +145,11 @@
             std::vector<mem_region> m_Regions;                  // by id
         };
         XPROFILE_API void   MemSnapshot ( std::vector<mem_pool>& Out ) noexcept;
+        // A memory space (an address space: "VRAM", "System RAM") as the driver sees it: its size, this process's budget in it and what this
+        // process uses of it (0: not known) - the maps span all of it, not only what the pools reserved
+        struct mem_space  { const char* m_pName = nullptr; std::uint64_t m_Size = 0, m_Budget = 0, m_Usage = 0; };
+        XPROFILE_API void   MemSpace    ( const char* pSpace, std::uint64_t Size, std::uint64_t Budget, std::uint64_t Usage ) noexcept;
+        XPROFILE_API void   MemSpaces   ( std::vector<mem_space>& Out ) noexcept;
 
         // A zone: Tracy's (sent while a viewer is connected) and the recorder's (the start and end times while enabled)
         struct scope
@@ -211,6 +216,7 @@
     #define XPROFILE_MEM_ALLOC(POOL, REGION, OFFSET, SIZE, TAG)     ::xprofile::MemAlloc(POOL, REGION, OFFSET, SIZE, TAG)
     #define XPROFILE_MEM_FREE(POOL, REGION, OFFSET)                 ::xprofile::MemFree(POOL, REGION, OFFSET)
     #define XPROFILE_MEM_OWNER(NAME)                                ::xprofile::mem_owner_scope XPROFILE_CAT(xprofile_owner_, __LINE__)(NAME)
+    #define XPROFILE_MEM_SPACE(SPACE, SIZE, BUDGET, USAGE)          ::xprofile::MemSpace(SPACE, SIZE, BUDGET, USAGE)
     // a place for xprofile::sequence::Next (a static location: the name a literal)
     #define XPROFILE_LOCATION(NAME)             ([]() noexcept -> const ::xprofile::location* { static const ::xprofile::location* const L = ::xprofile::Intern(NAME, __FUNCTION__, __FILE__, static_cast<std::uint32_t>(__LINE__)); return L; }())
     #define XPROFILE_GPU_SCOPE(TARGET, NAME)    ::xprofile::gpu_scope XPROFILE_CAT(xprofile_gpu_, __LINE__)(TARGET, XPROFILE_LOCATION(NAME))
@@ -242,6 +248,7 @@
     #define XPROFILE_MEM_ALLOC(POOL, REGION, OFFSET, SIZE, TAG)     do {} while (0)
     #define XPROFILE_MEM_FREE(POOL, REGION, OFFSET)                 do {} while (0)
     #define XPROFILE_MEM_OWNER(NAME)                                do {} while (0)
+    #define XPROFILE_MEM_SPACE(SPACE, SIZE, BUDGET, USAGE)          do {} while (0)
 
 #endif
 #endif

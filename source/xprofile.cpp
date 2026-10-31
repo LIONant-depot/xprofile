@@ -357,6 +357,22 @@ namespace xprofile
         }
     }
 
+    namespace { std::map<const char*, mem_space> s_Spaces; }               // by interned name (s_MemLock)
+
+    void MemSpace(const char* pSpace, std::uint64_t Size, std::uint64_t Budget, std::uint64_t Usage) noexcept
+    {
+        pSpace = InternName(pSpace);
+        std::lock_guard Lk(s_MemLock);
+        s_Spaces[pSpace] = { pSpace, Size, Budget, Usage };
+    }
+
+    void MemSpaces(std::vector<mem_space>& Out) noexcept
+    {
+        Out.clear();
+        std::lock_guard Lk(s_MemLock);
+        for (auto& [p, S] : s_Spaces) Out.push_back(S);
+    }
+
     void MemSnapshot(std::vector<mem_pool>& Out) noexcept
     {
         Out.clear();

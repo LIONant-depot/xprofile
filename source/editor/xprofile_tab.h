@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <string>
 #include <vector>
@@ -148,12 +149,15 @@ namespace xprofile::editor
             {
                 for (int Space = 0; Space < 2; ++Space)
                 {
-                    const char* pSpace = Space == 0 ? "VRAM" : "System RAM";
-                    if (!ImGui::BeginTabItem(pSpace, nullptr, m_Select == pSpace ? ImGuiTabItemFlags_SetSelected : 0)) continue;
+                    const char* pLabel = pSpace_Name(Space);
+                    if (!ImGui::BeginTabItem(pLabel, nullptr, m_Select == pLabel ? ImGuiTabItemFlags_SetSelected : 0)) continue;
                     std::vector<mem_pool> Pools;
                     for (const auto& P : m_Mem) if ((std::string_view(P.m_pName).starts_with("VRAM")) == (Space == 0)) Pools.push_back(P);
-                    if (Pools.empty()) ImGui::TextDisabled("Nothing reported in this memory yet.");
-                    else DrawMemoryMap(Pools, m_MemView[Space]);
+                    std::vector<mem_space> Spaces; MemSpaces(Spaces);
+                    const mem_space* pSpace = nullptr;
+                    for (const auto& S : Spaces) if (std::string_view(S.m_pName) == pSpace_Name(Space)) { m_Spaces[Space] = S; pSpace = &m_Spaces[Space]; }
+                    if (Pools.empty() && !pSpace) ImGui::TextDisabled("Nothing reported in this memory yet.");
+                    else DrawMemoryMap(Pools, m_MemView[Space], pSpace);
                     ImGui::EndTabItem();
                 }
                 ImGui::EndTabBar();
@@ -162,7 +166,12 @@ namespace xprofile::editor
 
         struct mem_view { double m_Zoom = 1, m_Top = 0; int m_Columns = 4; };      // a map's view: 1 = all of it; its first byte shown (0..1); the strip's columns
 
-        void DrawMemoryMap(const std::vector<mem_pool>& Pools, mem_view& V) noexcept
+        static const char* pSpace_Name(int Space) noexcept { return Space == 0 ? "VRAM" : "System RAM"; }
+
+        // pSpace (the driver's view of the whole memory: its size, this process's budget and usage; null: not reported): after the pools,
+        // what the rest of it is - this process's other memory (the driver's own, anything not allocated through xGPU), the free part of
+        // the budget, the part not available (other processes, the OS) - so the map is all of the memory, not only what was reserved
+        void DrawMemoryMap(const std::vector<mem_pool>& Pools, mem_view& V, const mem_space* pSpace) noexcept
         {
             constexpr double MB = 1.0 / (1024.0 * 1024.0);
 
@@ -172,10 +181,24 @@ namespace xprofile::editor
             for (const auto& P : Pools)
             {
                 std::uint64_t Free = 0, Largest = 0;
-                for (const auto& R : P.m_Regions) { Free += R.m_Size - std::min(R.m_Used, R.m_Size); Largest = std::max(Largest, R.m_LargestFree); for (const auto& A : R.m_Allocs) Tags.emplace(A.m_pTag ? A.m_pTag : "?", 0); }
+                for (const auto& R : P.m_Regions) { Free += R.m_Size - std::min(R.m_Used, R.m_Size); Largest = std::max(Largest, R.m_LargestFree); for (const auto& A : R.m_Allocs) Tags.emplace(Category(A.m_pTag), 0); }
                 ImGui::Text("%s: %.1f MB used in %u allocations, %.1f MB reserved in %zu regions (peak %.1f MB); free inside them %.1f MB, largest hole %.1f MB",
                     P.m_pName, P.m_Used * MB, P.m_nAllocs, P.m_Reserved * MB, P.m_Regions.size(), P.m_Peak * MB, Free * MB, Largest * MB);
                 Total += P.m_Reserved;
+            }
+            const std::uint64_t Reserved = Total;
+            std::uint64_t OtherOfProcess = 0, FreeForUs = 0, NotForUs = 0;
+            if (pSpace && pSpace->m_Size)
+            {
+                const std::uint64_t Usage = std::max(pSpace->m_Usage, Reserved);         // (usage 0: the driver does not say - what we reserved)
+                OtherOfProcess = Usage - Reserved;
+                const std::uint64_t Budget = std::min(pSpace->m_Budget, pSpace->m_Size);        // (a driver may give a budget past the heap: system RAM)
+                FreeForUs      = Budget > Usage ? Budget - Usage : 0;
+                NotForUs       = pSpace->m_Size > Usage + FreeForUs ? pSpace->m_Size - Usage - FreeForUs : 0;
+                Total          = Reserved + OtherOfProcess + FreeForUs + NotForUs;
+                ImGui::Text("%s: %.2f GB in all; this process uses %.2f GB (%.1f MB through these pools, %.1f MB other), its budget %.2f GB: %.2f GB free for it, %.2f GB not available (other processes, the OS)%s",
+                    pSpace->m_pName, pSpace->m_Size * MB / 1024, Usage * MB / 1024, Reserved * MB, OtherOfProcess * MB, std::min(pSpace->m_Budget, pSpace->m_Size) * MB / 1024, FreeForUs * MB / 1024, NotForUs * MB / 1024,
+                    !pSpace->m_Usage ? " (the driver gives no usage: VK_EXT_memory_budget missing)" : std::string_view(pSpace->m_pName) == "VRAM" ? "" : " - the driver counts only GPU allocations here, not the process's own RAM");
             }
             if (ImGui::Button("Fit")) { V.m_Zoom = 1; V.m_Top = 0; }
             ImGui::SameLine(); ImGui::SetNextItemWidth(90); ImGui::SliderInt("columns", &V.m_Columns, 1, 12);
@@ -263,9 +286,11 @@ namespace xprofile::editor
                     for (const auto& A : R.m_Allocs)
                     {
                         if (A.m_Offset > End) Seg(R0 + End, R0 + A.m_Offset, IM_COL32(150, 150, 150, 255), "FREE: " + Mb(A.m_Offset - End), "free: " + Mb(A.m_Offset - End) + Where);
-                        const std::string Owner = A.m_pOwner ? A.m_pOwner : "(no owner)";
-                        Seg(R0 + A.m_Offset, R0 + A.m_Offset + A.m_Size, TagColor(A.m_pTag ? A.m_pTag : "?"), Owner + ": " + Mb(A.m_Size),
-                            Owner + "\n" + (A.m_pTag ? A.m_pTag : "?") + ", " + Mb(A.m_Size) + " at " + Mb(A.m_Offset) + Where);
+                        // the label: what it is when it was named ("Shadows: atlas"), else whose it is (a resource: "Texture <guid>")
+                        const std::string Owner = A.m_pOwner ? A.m_pOwner : "(no owner)", Tag = A.m_pTag ? A.m_pTag : "?";
+                        const bool        bNamed = Tag.find(':') != std::string::npos;
+                        Seg(R0 + A.m_Offset, R0 + A.m_Offset + A.m_Size, TagColor(Category(A.m_pTag).c_str()), (bNamed ? Tag : Owner) + "  " + Mb(A.m_Size),
+                            Tag + "\nowner: " + Owner + "\n" + Mb(A.m_Size) + " at " + Mb(A.m_Offset) + Where);
                         End = std::max(End, A.m_Offset + A.m_Size);
                     }
                     if (R.m_Size > End) Seg(R0 + End, R0 + R.m_Size, IM_COL32(150, 150, 150, 255), "FREE: " + Mb(R.m_Size - End), "free: " + Mb(R.m_Size - End) + Where);
@@ -273,15 +298,37 @@ namespace xprofile::editor
                     R0 += double(R.m_Size);
                 }
             }
+            // the rest of the memory, as the driver says
+            if (OtherOfProcess) Seg(R0, R0 + double(OtherOfProcess), IM_COL32(120, 90, 60, 255), "This process, other: " + Mb(OtherOfProcess),
+                                    "this process's other memory: " + Mb(OtherOfProcess) + "\n(the driver's own, allocations not made through xGPU)"), R0 += double(OtherOfProcess);
+            if (FreeForUs) Seg(R0, R0 + double(FreeForUs), IM_COL32(150, 150, 150, 255), "FREE (for this process): " + Mb(FreeForUs),
+                               "free: " + Mb(FreeForUs) + " of this process's budget the driver can still give"), R0 += double(FreeForUs);
+            if (NotForUs) Seg(R0, R0 + double(NotForUs), IM_COL32(70, 70, 76, 255), "Not available: " + Mb(NotForUs),
+                              "not available to this process: " + Mb(NotForUs) + "\n(other processes, the OS, the driver's reserve)");
+            if (OtherOfProcess + FreeForUs + NotForUs) PoolStarts.push_back(double(Reserved));
             for (double B : PoolStarts) Line(B, IM_COL32(255, 150, 40, 255), 5.0f);     // a pool's start (a kind of memory: the header's lines in order)
             pDraw->PopClipRect();
             if (!Hover.empty()) ImGui::SetTooltip("%s", Hover.c_str());
         }
 
+        // a tag's category: before its ':' ("Shadows: atlas" -> "Shadows"), the whole of an unnamed one ("image") - the colour and the legend
+        static std::string Category(const char* pTag) noexcept
+        {
+            const std::string T = pTag ? pTag : "?";
+            return T.substr(0, T.find(':'));
+        }
+
+        // a category's colour: the known ones fixed and distinct (the engine's: xGPU setup names "Category: detail"), the others by hash
         static ImU32 TagColor(const char* pTag) noexcept
         {
-            static const ImU32 Palette[] = { IM_COL32(86, 156, 214, 255), IM_COL32(206, 145, 87, 255), IM_COL32(106, 190, 120, 255), IM_COL32(197, 112, 192, 255),
-                                             IM_COL32(220, 200, 90, 255), IM_COL32(90, 200, 200, 255), IM_COL32(230, 100, 100, 255), IM_COL32(160, 160, 230, 255) };
+            static const std::pair<const char*, ImU32> Known[] =
+            { { "Render target", IM_COL32(230, 110, 110, 255) }, { "Shadows", IM_COL32(150, 110, 220, 255) }, { "GI", IM_COL32(110, 200, 120, 255) }
+            , { "Probes", IM_COL32(230, 160, 210, 255) },        { "Lights", IM_COL32(240, 220, 100, 255) },  { "Culling", IM_COL32(90, 190, 230, 255) }
+            , { "Geometry", IM_COL32(86, 140, 214, 255) },       { "Materials", IM_COL32(230, 150, 70, 255) }, { "Frame", IM_COL32(170, 200, 90, 255) }
+            , { "Textures", IM_COL32(200, 120, 60, 255) },       { "Text", IM_COL32(120, 220, 210, 255) },     { "UI", IM_COL32(190, 190, 140, 255) }
+            , { "Outline", IM_COL32(250, 250, 250, 255) },       { "Debug", IM_COL32(255, 80, 200, 255) } };
+            for (const auto& [pName, Col] : Known) if (std::strcmp(pName, pTag) == 0) return Col;
+            static const ImU32 Palette[] = { IM_COL32(120, 170, 200, 255), IM_COL32(200, 170, 120, 255), IM_COL32(150, 150, 210, 255), IM_COL32(140, 200, 170, 255) };
             std::size_t h = 0; for (const char* p = pTag; *p; ++p) h = h * 31 + static_cast<unsigned char>(*p);
             return Palette[h % (sizeof(Palette) / sizeof(Palette[0]))];
         }
@@ -298,6 +345,7 @@ namespace xprofile::editor
         std::vector<mem_pool>   m_Mem       {};
         int                     m_MemRefresh = 0;
         mem_view                m_MemView[2] {};        // the VRAM map's view, the System RAM map's
+        mem_space               m_Spaces[2]  {};        // their spaces as last reported
     #endif
         std::string             m_Select    {};             // a page to bring forward on the next Draw ("Metrics", "Memory", "VRAM", "System RAM": Profiler -Show)
         std::string             m_Viewer    {};
