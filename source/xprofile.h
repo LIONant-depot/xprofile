@@ -113,6 +113,29 @@
         // Tracy's capture tool started (no window, the profiler switched on): this process for Seconds into pTraceFile
         XPROFILE_API bool   LaunchCapture   ( const char* pTraceFile, int Seconds ) noexcept;
 
+        // Memory (tracy_plan section 15): pools (a kind of memory: "VRAM"), their regions (a block of it, by any unique id) and the
+        // allocations in them by offset. The recorder keeps them always - the map of what is allocated and what is free must be whole
+        // when someone looks (meant for few, large allocations: VRAM blocks, resource loads; not every new); Tracy gets each allocation
+        // made while it is connected (its memory window). Names are interned here: any string.
+        XPROFILE_API void   MemRegion   ( const char* pPool, std::uint64_t Region, std::uint64_t Size ) noexcept;     // Size 0: the region goes, with what is left in it
+        XPROFILE_API void   MemAlloc    ( const char* pPool, std::uint64_t Region, std::uint64_t Offset, std::uint64_t Size, const char* pTag ) noexcept;
+        XPROFILE_API void   MemFree     ( const char* pPool, std::uint64_t Region, std::uint64_t Offset ) noexcept;
+        struct mem_alloc  { std::uint64_t m_Offset = 0, m_Size = 0; const char* m_pTag = nullptr; };
+        struct mem_region
+        {
+            std::uint64_t           m_Id = 0, m_Size = 0, m_Used = 0;
+            std::uint64_t           m_LargestFree = 0;          // the biggest hole (with m_Size - m_Used: how fragmented)
+            std::vector<mem_alloc>  m_Allocs;                   // by offset
+        };
+        struct mem_pool
+        {
+            const char*             m_pName = nullptr;
+            std::uint64_t           m_Used = 0, m_Peak = 0, m_Reserved = 0;     // in allocations, the most ever, in regions
+            std::uint32_t           m_nAllocs = 0;
+            std::vector<mem_region> m_Regions;                  // by id
+        };
+        XPROFILE_API void   MemSnapshot ( std::vector<mem_pool>& Out ) noexcept;
+
         // A zone: Tracy's (sent while a viewer is connected) and the recorder's (the start and end times while enabled)
         struct scope
         {
@@ -174,6 +197,9 @@
     #define XPROFILE_PLOT_LIMIT(NAME, MAX)      do { if (::xprofile::isEnabled()) { static const char* const XPROFILE_CAT(xprofile_plot_, __LINE__) = ::xprofile::InternName(NAME); ::xprofile::SetPlotLimit(XPROFILE_CAT(xprofile_plot_, __LINE__), MAX); } } while (0)
     #define XPROFILE_MESSAGE(TXT, LEN)          do { if (::xprofile::isEnabled()) { TracyMessage(TXT, LEN); } } while (0)
     #define XPROFILE_THREAD(NAME)               ::xprofile::SetThreadName(NAME)
+    #define XPROFILE_MEM_REGION(POOL, REGION, SIZE)                 ::xprofile::MemRegion(POOL, REGION, SIZE)
+    #define XPROFILE_MEM_ALLOC(POOL, REGION, OFFSET, SIZE, TAG)     ::xprofile::MemAlloc(POOL, REGION, OFFSET, SIZE, TAG)
+    #define XPROFILE_MEM_FREE(POOL, REGION, OFFSET)                 ::xprofile::MemFree(POOL, REGION, OFFSET)
     // a place for xprofile::sequence::Next (a static location: the name a literal)
     #define XPROFILE_LOCATION(NAME)             ([]() noexcept -> const ::xprofile::location* { static const ::xprofile::location* const L = ::xprofile::Intern(NAME, __FUNCTION__, __FILE__, static_cast<std::uint32_t>(__LINE__)); return L; }())
     #define XPROFILE_GPU_SCOPE(TARGET, NAME)    ::xprofile::gpu_scope XPROFILE_CAT(xprofile_gpu_, __LINE__)(TARGET, XPROFILE_LOCATION(NAME))
@@ -201,6 +227,9 @@
     #define XPROFILE_PLOT_LIMIT(NAME, MAX)      do {} while (0)
     #define XPROFILE_MESSAGE(TXT, LEN)          do {} while (0)
     #define XPROFILE_THREAD(NAME)               do {} while (0)
+    #define XPROFILE_MEM_REGION(POOL, REGION, SIZE)                 do {} while (0)
+    #define XPROFILE_MEM_ALLOC(POOL, REGION, OFFSET, SIZE, TAG)     do {} while (0)
+    #define XPROFILE_MEM_FREE(POOL, REGION, OFFSET)                 do {} while (0)
 
 #endif
 #endif

@@ -279,6 +279,95 @@ namespace xprofile
         }
     }
 
+    //------------------------------------------------------------------------------------------------------------
+    // Memory: pools -> regions -> allocations by offset, always kept; Tracy's memory window gets the allocations made while connected
+    // (each under a made-up address, unique per region and offset)
+
+    namespace
+    {
+        struct mem_alloc_rec  { std::uint64_t m_Size = 0; const char* m_pTag = nullptr; bool m_bTracy = false; };
+        struct mem_region_rec { std::uint64_t m_Size = 0; std::map<std::uint64_t, mem_alloc_rec> m_Allocs; };
+        struct mem_pool_rec   { std::uint64_t m_Used = 0, m_Peak = 0; std::map<std::uint64_t, mem_region_rec> m_Regions; };
+        std::mutex                                  s_MemLock;
+        std::map<const char*, mem_pool_rec>         s_Mem;                  // by interned name
+
+        void* TracyAddress(std::uint64_t Region, std::uint64_t Offset) noexcept { return reinterpret_cast<void*>(static_cast<std::uintptr_t>(Region * 0x9E3779B97F4A7C15ull + Offset)); }
+
+        void ForgetAlloc(const char* pPool, mem_pool_rec& P, std::uint64_t Region, std::uint64_t Offset, const mem_alloc_rec& A) noexcept
+        {
+            P.m_Used -= A.m_Size;
+            if (A.m_bTracy) TracyFreeN(TracyAddress(Region, Offset), pPool);
+        }
+    }
+
+    void MemRegion(const char* pPool, std::uint64_t Region, std::uint64_t Size) noexcept
+    {
+        pPool = InternName(pPool);
+        std::lock_guard Lk(s_MemLock);
+        auto& P = s_Mem[pPool];
+        if (Size) { P.m_Regions[Region].m_Size = Size; return; }
+        if (auto It = P.m_Regions.find(Region); It != P.m_Regions.end())
+        {
+            for (auto& [Offset, A] : It->second.m_Allocs) ForgetAlloc(pPool, P, Region, Offset, A);
+            P.m_Regions.erase(It);
+        }
+    }
+
+    void MemAlloc(const char* pPool, std::uint64_t Region, std::uint64_t Offset, std::uint64_t Size, const char* pTag) noexcept
+    {
+        pPool = InternName(pPool);
+        pTag  = pTag ? InternName(pTag) : nullptr;
+        std::lock_guard Lk(s_MemLock);
+        auto& P = s_Mem[pPool];
+        auto& A = P.m_Regions[Region].m_Allocs[Offset];
+        if (A.m_Size) ForgetAlloc(pPool, P, Region, Offset, A);            // (a free never told: replaced)
+        A = { Size, pTag, s_bStarted.load() && isConnected() };
+        if (A.m_bTracy) TracyAllocN(TracyAddress(Region, Offset), Size, pPool);
+        P.m_Used += Size;
+        P.m_Peak  = std::max(P.m_Peak, P.m_Used);
+    }
+
+    void MemFree(const char* pPool, std::uint64_t Region, std::uint64_t Offset) noexcept
+    {
+        pPool = InternName(pPool);
+        std::lock_guard Lk(s_MemLock);
+        auto& P = s_Mem[pPool];
+        auto R = P.m_Regions.find(Region);
+        if (R == P.m_Regions.end()) return;
+        if (auto It = R->second.m_Allocs.find(Offset); It != R->second.m_Allocs.end())
+        {
+            ForgetAlloc(pPool, P, Region, Offset, It->second);
+            R->second.m_Allocs.erase(It);
+        }
+    }
+
+    void MemSnapshot(std::vector<mem_pool>& Out) noexcept
+    {
+        Out.clear();
+        std::lock_guard Lk(s_MemLock);
+        for (auto& [pName, P] : s_Mem)
+        {
+            auto& O = Out.emplace_back();
+            O.m_pName = pName; O.m_Used = P.m_Used; O.m_Peak = P.m_Peak;
+            for (auto& [Id, R] : P.m_Regions)
+            {
+                auto& OR = O.m_Regions.emplace_back();
+                OR.m_Id = Id; OR.m_Size = R.m_Size;
+                std::uint64_t End = 0;
+                for (auto& [Offset, A] : R.m_Allocs)
+                {
+                    OR.m_Allocs.push_back({ Offset, A.m_Size, A.m_pTag });
+                    OR.m_Used += A.m_Size;
+                    if (Offset > End) OR.m_LargestFree = std::max(OR.m_LargestFree, Offset - End);
+                    End = std::max(End, Offset + A.m_Size);
+                }
+                if (R.m_Size > End) OR.m_LargestFree = std::max(OR.m_LargestFree, R.m_Size - End);
+                O.m_Reserved += R.m_Size;
+                O.m_nAllocs  += static_cast<std::uint32_t>(R.m_Allocs.size());
+            }
+        }
+    }
+
     bool LaunchViewer(const char* pViewerExe) noexcept
     {
         // "-a 127.0.0.1": it connects to this process at once
