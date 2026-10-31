@@ -247,49 +247,76 @@ namespace xprofile
 
     //------------------------------------------------------------------------------
 
-    bool LaunchViewer(const char* pViewerExe) noexcept
+    namespace
     {
-        // detached: the viewer outlives nothing of ours; "-a 127.0.0.1": it connects to this process at once
-    #if defined(_WIN32)
-        std::string Cmd = std::string("\"") + pViewerExe + "\" -a 127.0.0.1";
-        std::wstring WCmd(Cmd.begin(), Cmd.end());
-        STARTUPINFOW Si{ .cb = sizeof(STARTUPINFOW) };
-        PROCESS_INFORMATION Pi{};
-        if (!CreateProcessW(nullptr, WCmd.data(), nullptr, nullptr, FALSE, DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, nullptr, nullptr, &Si, &Pi)) return false;
-        CloseHandle(Pi.hThread); CloseHandle(Pi.hProcess);
-        return true;
-    #else
-        const pid_t Pid = fork();
-        if (Pid < 0) return false;
-        if (Pid == 0)
+        // a program started detached (it outlives nothing of ours): its executable and arguments
+        bool Spawn(const std::string& Exe, const std::vector<std::string>& Args) noexcept
         {
-            setsid();
-            if (fork() == 0) { execl(pViewerExe, pViewerExe, "-a", "127.0.0.1", static_cast<char*>(nullptr)); _exit(127); }
-            _exit(0);
+        #if defined(_WIN32)
+            std::string Cmd = "\"" + Exe + "\"";
+            for (auto& A : Args) Cmd += " \"" + A + "\"";
+            std::wstring WCmd(Cmd.begin(), Cmd.end());
+            STARTUPINFOW Si{ .cb = sizeof(STARTUPINFOW) };
+            PROCESS_INFORMATION Pi{};
+            if (!CreateProcessW(nullptr, WCmd.data(), nullptr, nullptr, FALSE, DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, nullptr, nullptr, &Si, &Pi)) return false;
+            CloseHandle(Pi.hThread); CloseHandle(Pi.hProcess);
+            return true;
+        #else
+            std::vector<char*> Argv{ const_cast<char*>(Exe.c_str()) };
+            for (auto& A : Args) Argv.push_back(const_cast<char*>(A.c_str()));
+            Argv.push_back(nullptr);
+            const pid_t Pid = fork();
+            if (Pid < 0) return false;
+            if (Pid == 0)
+            {
+                setsid();
+                if (fork() == 0) { execv(Exe.c_str(), Argv.data()); _exit(127); }
+                _exit(0);
+            }
+            int Status = 0; waitpid(Pid, &Status, 0);
+            return true;
+        #endif
         }
-        int Status = 0; waitpid(Pid, &Status, 0);
-        return true;
-    #endif
     }
 
-    std::string ViewerPath(void) noexcept
+    bool LaunchViewer(const char* pViewerExe) noexcept
+    {
+        // "-a 127.0.0.1": it connects to this process at once
+        return Spawn(pViewerExe, { "-a", "127.0.0.1" });
+    }
+
+    bool LaunchCapture(const char* pTraceFile, int Seconds) noexcept
+    {
+        // Tracy's capture tool, no window: this process for Seconds into pTraceFile (-f: overwrite); the profiler must be on
+        const auto Exe = ToolPath("capture", "tracy-capture");
+        if (Exe.empty()) return false;
+        if (!isEnabled()) Enable(true);
+        return Spawn(Exe, { "-a", "127.0.0.1", "-o", pTraceFile, "-s", std::to_string(std::max(1, Seconds)), "-f" });
+    }
+
+    std::string ToolPath(const char* pFolder, const char* pName) noexcept
     {
         std::error_code Ec;
         std::filesystem::path Exe;
     #if defined(_WIN32)
         wchar_t Buf[1024] = {};
         if (GetModuleFileNameW(nullptr, Buf, 1024)) Exe = Buf;
-        const char* pName = "tracy-profiler.exe";
+        const std::string Name = std::string(pName) + ".exe";
     #else
         Exe = std::filesystem::canonical("/proc/self/exe", Ec);
-        const char* pName = "tracy-profiler";
+        const std::string Name = pName;
     #endif
         for (auto Dir = Exe.parent_path(); !Dir.empty(); Dir = Dir.parent_path())
         {
-            for (const auto& Sub : { std::filesystem::path("Build") / "tracy" / "profiler", std::filesystem::path("tracy") / "profiler" })
-                if (auto P = Dir / Sub / pName; std::filesystem::exists(P, Ec)) return P.string();
+            for (const auto& Sub : { std::filesystem::path("Build") / "tracy" / pFolder, std::filesystem::path("tracy") / pFolder })
+                if (auto P = Dir / Sub / Name; std::filesystem::exists(P, Ec)) return P.string();
             if (Dir == Dir.parent_path()) break;
         }
         return {};
+    }
+
+    std::string ViewerPath(void) noexcept
+    {
+        return ToolPath("profiler", "tracy-profiler");
     }
 }

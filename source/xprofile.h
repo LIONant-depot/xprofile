@@ -108,6 +108,10 @@
         XPROFILE_API bool   LaunchViewer( const char* pViewerExe ) noexcept;
         // where it is when xprofile's BuildTracyTools made it: <a folder above the executable>/Build/tracy/profiler/tracy-profiler(.exe); "": not built
         XPROFILE_API std::string ViewerPath( void ) noexcept;
+        // Tracy's tools found the same way (pFolder: "capture", "csvexport"; pName without .exe); "": not built
+        XPROFILE_API std::string ToolPath  ( const char* pFolder, const char* pName ) noexcept;
+        // Tracy's capture tool started (no window, the profiler switched on): this process for Seconds into pTraceFile
+        XPROFILE_API bool   LaunchCapture   ( const char* pTraceFile, int Seconds ) noexcept;
 
         // A zone: Tracy's (sent while a viewer is connected) and the recorder's (the start and end times while enabled)
         struct scope
