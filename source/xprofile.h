@@ -123,6 +123,15 @@
             std::int64_t        m_Start;
         };
 
+        // The recorder's half of a zone alone (XPROFILE_SCOPE_DYNAMIC: Tracy gets its own transient zone)
+        struct record_scope
+        {
+            explicit record_scope( const location* pWhere ) noexcept : m_pWhere{ pWhere }, m_Start{ pWhere ? Now() : 0 } {}
+            ~record_scope( void ) noexcept { if (m_Start) RecordZone(m_pWhere, m_Start, Now()); }
+            const location* m_pWhere;
+            std::int64_t    m_Start;
+        };
+
         // Zones one after the other (a frame's sections): Next ends the current one and starts the next, End (or the destructor) the last
         struct sequence
         {
@@ -154,7 +163,9 @@
     #define XPROFILE_SCOPE(NAME)                static const ::xprofile::location* const XPROFILE_CAT(xprofile_where_, __LINE__) = ::xprofile::Intern(NAME, __FUNCTION__, __FILE__, static_cast<std::uint32_t>(__LINE__)); \
                                                 ::xprofile::scope XPROFILE_CAT(xprofile_zone_, __LINE__)(XPROFILE_CAT(xprofile_where_, __LINE__))
     #define XPROFILE_SCOPE_TEXT(NAME, TXT, LEN) XPROFILE_SCOPE(NAME); XPROFILE_CAT(xprofile_zone_, __LINE__).m_Zone.Text(TXT, LEN)
-    #define XPROFILE_SCOPE_DYNAMIC(NAME)        ::xprofile::scope XPROFILE_CAT(xprofile_zone_, __LINE__)(::xprofile::isEnabled() ? ::xprofile::InternDynamic(NAME) : nullptr)
+    // (Tracy: its transient zone, the name copied per zone - an interned location with no file came out as garbage names in the viewer,
+    // 2026-10-31, cause not found yet; the recorder: the interned location)
+    #define XPROFILE_SCOPE_DYNAMIC(NAME)        ZoneTransientN(XPROFILE_CAT(xprofile_tzone_, __LINE__), NAME, ::xprofile::isEnabled());                                                 ::xprofile::record_scope XPROFILE_CAT(xprofile_rzone_, __LINE__)(::xprofile::isEnabled() ? ::xprofile::InternDynamic(NAME) : nullptr)
     #define XPROFILE_FRAME()                    do { if (::xprofile::isEnabled()) { FrameMark; ::xprofile::RecordFrame(); } } while (0)
     #define XPROFILE_PLOT(NAME, VALUE)          do { if (::xprofile::isEnabled()) { static const char* const XPROFILE_CAT(xprofile_plot_, __LINE__) = ::xprofile::InternName(NAME); TracyPlot(XPROFILE_CAT(xprofile_plot_, __LINE__), VALUE); ::xprofile::RecordPlot(XPROFILE_CAT(xprofile_plot_, __LINE__), VALUE); } } while (0)
     // a plot's theoretical maximum (the hardware's: a disk's rated MB/s, all cores' decode) - the Profiler tab's Max scale
