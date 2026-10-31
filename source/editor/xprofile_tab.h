@@ -6,6 +6,7 @@
 #include "../xprofile.h"
 #include <algorithm>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -81,14 +82,38 @@ namespace xprofile::editor
                 ImGui::EndTable();
             }
 
-            // the plots
-            for (const auto& P : m_Snap.m_Plots)
+            // the plots: column 0 the buttons (Rel: scaled to the largest point shown; Max: 0 .. the theoretical maximum - the one the code
+            // declared, XPROFILE_PLOT_LIMIT, editable here: hardware differs), column 1 the graph
+            if (!m_Snap.m_Plots.empty() && ImGui::BeginTable("##plots", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV))
             {
-                if (m_Filter[0] && !Contains(P.m_pName, m_Filter)) continue;
-                char Overlay[160]; std::snprintf(Overlay, sizeof(Overlay), "%s: %.2f  (%.2f .. %.2f)", P.m_pName, P.m_Last, P.m_Min, P.m_Max);
-                ImGui::PushID(P.m_pName);           // (one ID per plot: they all have the same hidden label)
-                ImGui::PlotLines("##plot", P.m_History.data(), static_cast<int>(P.m_History.size()), 0, Overlay, static_cast<float>(P.m_Min), static_cast<float>(P.m_Max * 1.05 + 1e-6), ImVec2(-1, 36));
-                ImGui::PopID();
+                ImGui::TableSetupColumn("##buttons", ImGuiTableColumnFlags_WidthFixed, 150);
+                ImGui::TableSetupColumn("##graph", ImGuiTableColumnFlags_WidthStretch);
+                for (const auto& P : m_Snap.m_Plots)
+                {
+                    if (m_Filter[0] && !Contains(P.m_pName, m_Filter)) continue;
+                    auto& U = m_PlotUI[P.m_pName];
+                    if (U.m_Limit < 0) U.m_Limit = static_cast<float>(P.m_Limit);
+                    ImGui::PushID(P.m_pName);           // (one ID per plot: their widgets have the same hidden labels)
+                    ImGui::TableNextRow();
+
+                    ImGui::TableNextColumn();
+                    if (ImGui::Button(U.m_bMax ? "Max" : "Rel", ImVec2(44, 0))) U.m_bMax = !U.m_bMax;
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip(U.m_bMax ? "Scaled to the theoretical maximum (click: to the largest point shown)" : "Scaled to the largest point shown (click: to the theoretical maximum)");
+                    ImGui::SameLine(); ImGui::SetNextItemWidth(-1);
+                    ImGui::DragFloat("##limit", &U.m_Limit, std::max(1.0f, U.m_Limit * 0.01f), 0, 0, U.m_Limit > 0 ? "max %.0f" : "max: none");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The theoretical maximum of this plot (declared by the code; drag to change it for this machine)");
+
+                    ImGui::TableNextColumn();
+                    const bool  bMax = U.m_bMax && U.m_Limit > 0;
+                    const float Lo   = bMax ? 0.0f : static_cast<float>(P.m_Min);
+                    const float Hi   = bMax ? U.m_Limit : static_cast<float>(P.m_Max * 1.05 + 1e-6);
+                    char Overlay[200];
+                    if (U.m_Limit > 0) std::snprintf(Overlay, sizeof(Overlay), "%s: %.2f  (%.2f .. %.2f)  %.0f%% of max", P.m_pName, P.m_Last, P.m_Min, P.m_Max, 100.0 * P.m_Last / U.m_Limit);
+                    else               std::snprintf(Overlay, sizeof(Overlay), "%s: %.2f  (%.2f .. %.2f)", P.m_pName, P.m_Last, P.m_Min, P.m_Max);
+                    ImGui::PlotLines("##plot", P.m_History.data(), static_cast<int>(P.m_History.size()), 0, Overlay, Lo, Hi, ImVec2(-1, 40));
+                    ImGui::PopID();
+                }
+                ImGui::EndTable();
             }
         #endif
         }
@@ -108,5 +133,7 @@ namespace xprofile::editor
         int                     m_nFrames   = 120;
         int                     m_Refresh   = 0;
         char                    m_Filter[64] {};
+        struct plot_ui { bool m_bMax = false; float m_Limit = -1; };   // (-1: take the declared limit)
+        std::map<std::string, plot_ui> m_PlotUI {};
     };
 }

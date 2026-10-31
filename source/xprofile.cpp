@@ -145,7 +145,7 @@ namespace xprofile
         std::array<std::int64_t, frames_v>          s_FrameEnds {};
         std::atomic<std::uint64_t>                  s_nFrames   { 0 };
 
-        struct plot_ring { std::array<float, 256> m_Values{}; std::uint32_t m_n = 0; double m_Last = 0; };
+        struct plot_ring { std::array<float, 256> m_Values{}; std::uint32_t m_n = 0; double m_Last = 0, m_Limit = 0; };
         std::mutex                                  s_PlotsLock;
         std::map<const char*, plot_ring>            s_Plots;                // by interned name
     }
@@ -179,9 +179,15 @@ namespace xprofile
         P.m_Last = Value;
     }
 
+    void SetPlotLimit(const char* pInternedName, double Max) noexcept
+    {
+        std::lock_guard Lk(s_PlotsLock);
+        s_Plots[pInternedName].m_Limit = Max;
+    }
+
     void ClearRecorder(void) noexcept
     {
-        { std::lock_guard Lk(s_PlotsLock); s_Plots.clear(); }
+        { std::lock_guard Lk(s_PlotsLock); for (auto& [p, P] : s_Plots) { P.m_n = 0; P.m_Last = 0; } }     // (the limits stay)
         s_nFrames.store(0);
         std::lock_guard Lk(s_RingsLock);
         for (auto& R : s_Rings) R->m_Head.store(0);       // (a thread writing meanwhile: at worst one stale entry)
@@ -230,7 +236,8 @@ namespace xprofile
         std::lock_guard Lk(s_PlotsLock);
         for (auto& [pName, P] : s_Plots)
         {
-            plot_stat S{ .m_pName = pName, .m_Last = P.m_Last };
+            if (P.m_n == 0) continue;                       // (a limit set, nothing plotted yet)
+            plot_stat S{ .m_pName = pName, .m_Last = P.m_Last, .m_Limit = P.m_Limit };
             const auto k = std::min<std::uint32_t>(P.m_n, static_cast<std::uint32_t>(P.m_Values.size()));
             for (std::uint32_t i = P.m_n - k; i < P.m_n; ++i) S.m_History.push_back(P.m_Values[i % P.m_Values.size()]);
             if (!S.m_History.empty()) { auto [Lo, Hi] = std::minmax_element(S.m_History.begin(), S.m_History.end()); S.m_Min = *Lo; S.m_Max = *Hi; }

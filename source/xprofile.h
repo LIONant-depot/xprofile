@@ -76,6 +76,7 @@
         XPROFILE_API void   RecordZone  ( const location* pWhere, std::int64_t StartNs, std::int64_t EndNs ) noexcept;
         XPROFILE_API void   RecordFrame ( void ) noexcept;
         XPROFILE_API void   RecordPlot  ( const char* pInternedName, double Value ) noexcept;
+        XPROFILE_API void   SetPlotLimit( const char* pInternedName, double Max ) noexcept;     // the theoretical maximum (the tab's Max scale); 0: none
         inline std::int64_t Now         ( void ) noexcept { return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
         // What the recorder saw over the last frames
@@ -90,6 +91,7 @@
         {
             const char*         m_pName     = nullptr;
             double              m_Last      = 0, m_Min = 0, m_Max = 0;
+            double              m_Limit     = 0;            // its theoretical maximum (XPROFILE_PLOT_LIMIT), 0: none
             std::vector<float>  m_History;                  // oldest first
         };
         struct snapshot
@@ -151,6 +153,8 @@
     #define XPROFILE_SCOPE_DYNAMIC(NAME)        ::xprofile::scope XPROFILE_CAT(xprofile_zone_, __LINE__)(::xprofile::isEnabled() ? ::xprofile::InternDynamic(NAME) : nullptr)
     #define XPROFILE_FRAME()                    do { if (::xprofile::isEnabled()) { FrameMark; ::xprofile::RecordFrame(); } } while (0)
     #define XPROFILE_PLOT(NAME, VALUE)          do { if (::xprofile::isEnabled()) { static const char* const XPROFILE_CAT(xprofile_plot_, __LINE__) = ::xprofile::InternName(NAME); TracyPlot(XPROFILE_CAT(xprofile_plot_, __LINE__), VALUE); ::xprofile::RecordPlot(XPROFILE_CAT(xprofile_plot_, __LINE__), VALUE); } } while (0)
+    // a plot's theoretical maximum (the hardware's: a disk's rated MB/s, all cores' decode) - the Profiler tab's Max scale
+    #define XPROFILE_PLOT_LIMIT(NAME, MAX)      do { if (::xprofile::isEnabled()) { static const char* const XPROFILE_CAT(xprofile_plot_, __LINE__) = ::xprofile::InternName(NAME); ::xprofile::SetPlotLimit(XPROFILE_CAT(xprofile_plot_, __LINE__), MAX); } } while (0)
     #define XPROFILE_MESSAGE(TXT, LEN)          do { if (::xprofile::isEnabled()) { TracyMessage(TXT, LEN); } } while (0)
     #define XPROFILE_THREAD(NAME)               ::xprofile::SetThreadName(NAME)
     // a place for xprofile::sequence::Next (a static location: the name a literal)
@@ -177,6 +181,7 @@
     #define XPROFILE_SCOPE_TEXT(NAME, TXT, LEN)
     #define XPROFILE_FRAME()                    do {} while (0)
     #define XPROFILE_PLOT(NAME, VALUE)          do {} while (0)
+    #define XPROFILE_PLOT_LIMIT(NAME, MAX)      do {} while (0)
     #define XPROFILE_MESSAGE(TXT, LEN)          do {} while (0)
     #define XPROFILE_THREAD(NAME)               do {} while (0)
 
