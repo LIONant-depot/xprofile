@@ -86,7 +86,9 @@ namespace xprofile::editor
             {
                 if (m_Filter[0] && !Contains(P.m_pName, m_Filter)) continue;
                 char Overlay[160]; std::snprintf(Overlay, sizeof(Overlay), "%s: %.2f  (%.2f .. %.2f)", P.m_pName, P.m_Last, P.m_Min, P.m_Max);
+                ImGui::PushID(P.m_pName);           // (one ID per plot: they all have the same hidden label)
                 ImGui::PlotLines("##plot", P.m_History.data(), static_cast<int>(P.m_History.size()), 0, Overlay, static_cast<float>(P.m_Min), static_cast<float>(P.m_Max * 1.05 + 1e-6), ImVec2(-1, 36));
+                ImGui::PopID();
             }
         #endif
         }
