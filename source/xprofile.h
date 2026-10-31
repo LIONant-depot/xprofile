@@ -11,6 +11,8 @@
 //  XPROFILE_MESSAGE(text, length)      a line on the timeline (the log)
 //  XPROFILE_THREAD("name")             names the calling thread (the OS name too: debuggers, Tracy)
 //  XPROFILE_SCOPE_DYNAMIC(pName)       a zone named at run time (a job's name)
+//  XPROFILE_GPU_SCOPE(Window, "name")  a GPU zone (xgpu::window between render passes, xgpu::cmd_buffer inside one) - Tracy's Vulkan
+//                                      context in xGPU, its results collected at the start of each frame
 //  xprofile::sequence S; S.Next(XPROFILE_LOCATION("a")); ... S.Next(XPROFILE_LOCATION("b")); S.End();   zones back to back
 //
 // A header-only library that is also built without xprofile (tools, tests) includes it this way - the macros are there either way:
@@ -91,7 +93,18 @@
             TracyCZoneCtx   m_Ctx   {};
             bool            m_bOpen = false;
         };
+
+        // A GPU zone to the end of the scope on a target with BeginGPUZone(const void*) / EndGPUZone() (xgpu::window between render passes,
+        // xgpu::cmd_buffer inside one): the GPU's time of the commands recorded meanwhile
+        template< typename T >
+        struct gpu_scope
+        {
+            gpu_scope( T& Target, const location* pWhere ) noexcept : m_Target{ Target } { m_Target.BeginGPUZone(pWhere); }
+            ~gpu_scope( void ) noexcept { m_Target.EndGPUZone(); }
+            T& m_Target;
+        };
     }
+    #define XPROFILE_GPU_SCOPE(TARGET, NAME)    ::xprofile::gpu_scope XPROFILE_CAT(xprofile_gpu_, __LINE__)(TARGET, XPROFILE_LOCATION(NAME))
 
 #else
 
@@ -107,6 +120,7 @@
 
     #define XPROFILE_SCOPE_DYNAMIC(NAME)
     #define XPROFILE_LOCATION(NAME)             (static_cast<const ::xprofile::location*>(nullptr))
+    #define XPROFILE_GPU_SCOPE(TARGET, NAME)
 
     #define XPROFILE_SCOPE(NAME)
     #define XPROFILE_SCOPE_TEXT(NAME, TXT, LEN)
