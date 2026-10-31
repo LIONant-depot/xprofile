@@ -165,7 +165,9 @@
     #define XPROFILE_SCOPE_TEXT(NAME, TXT, LEN) XPROFILE_SCOPE(NAME); XPROFILE_CAT(xprofile_zone_, __LINE__).m_Zone.Text(TXT, LEN)
     // (Tracy: its transient zone, the name copied per zone - an interned location with no file came out as garbage names in the viewer,
     // 2026-10-31, cause not found yet; the recorder: the interned location)
-    #define XPROFILE_SCOPE_DYNAMIC(NAME)        ZoneTransientN(XPROFILE_CAT(xprofile_tzone_, __LINE__), NAME, ::xprofile::isEnabled());                                                 ::xprofile::record_scope XPROFILE_CAT(xprofile_rzone_, __LINE__)(::xprofile::isEnabled() ? ::xprofile::InternDynamic(NAME) : nullptr)
+    // (NAME read only while recording: Tracy's transient zone takes strlen of its name even when inactive - every job paid it, and a job whose
+    // name was already freed crashed with the profiler off)
+    #define XPROFILE_SCOPE_DYNAMIC(NAME)        const bool XPROFILE_CAT(xprofile_on_, __LINE__) = ::xprofile::isEnabled(); ZoneTransientN(XPROFILE_CAT(xprofile_tzone_, __LINE__), XPROFILE_CAT(xprofile_on_, __LINE__) ? (NAME) : "", XPROFILE_CAT(xprofile_on_, __LINE__)); ::xprofile::record_scope XPROFILE_CAT(xprofile_rzone_, __LINE__)(XPROFILE_CAT(xprofile_on_, __LINE__) ? ::xprofile::InternDynamic(NAME) : nullptr)
     #define XPROFILE_FRAME()                    do { if (::xprofile::isEnabled()) { FrameMark; ::xprofile::RecordFrame(); } } while (0)
     #define XPROFILE_PLOT(NAME, VALUE)          do { if (::xprofile::isEnabled()) { static const char* const XPROFILE_CAT(xprofile_plot_, __LINE__) = ::xprofile::InternName(NAME); TracyPlot(XPROFILE_CAT(xprofile_plot_, __LINE__), VALUE); ::xprofile::RecordPlot(XPROFILE_CAT(xprofile_plot_, __LINE__), VALUE); } } while (0)
     // a plot's theoretical maximum (the hardware's: a disk's rated MB/s, all cores' decode) - the Profiler tab's Max scale
