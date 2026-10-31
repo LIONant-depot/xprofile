@@ -133,9 +133,10 @@ namespace xprofile::editor
             }
         }
 
-        // The memory pools (always kept, Record on or off) as an icicle chart: columns left to right - all of it, each pool, each region
-        // (a VRAM block of 64 MB, a large resource's own allocation), what is in it (allocations in their tag's colour, holes grey); the
-        // height is the bytes. Wheel: zoom around the mouse; right button: pan; Fit: all of it again. Hover: what it is.
+        // The memory pools (always kept, Record on or off) as one map: every pool's regions one after the other, each allocation (its
+        // owner and size, in its tag's colour) and each hole (grey) in address order - the strip read top to bottom, column after column
+        // like text. Region starts: a thin line (hover: the region). Fit: all the memory in the columns; wheel: zoom around the mouse (the
+        // strip longer); right button: scroll along it.
         void DrawMemory(void) noexcept
         {
             if (m_MemRefresh-- <= 0) { MemSnapshot(m_Mem); m_MemRefresh = 15; }
@@ -154,84 +155,97 @@ namespace xprofile::editor
                 Total += P.m_Reserved;
             }
             if (ImGui::Button("Fit")) { m_MemZoom = 1; m_MemTop = 0; }
-            ImGui::SameLine(); ImGui::TextDisabled("(wheel: zoom, right button: pan)");
+            ImGui::SameLine(); ImGui::SetNextItemWidth(90); ImGui::SliderInt("columns", &m_MemColumns, 1, 12);
+            ImGui::SameLine(); ImGui::TextDisabled("(wheel: zoom, right button: scroll)");
             for (const auto& [Tag, n] : Tags)
             {
                 ImGui::SameLine(0, 18);
                 ImGui::ColorButton(("##" + Tag).c_str(), ImGui::ColorConvertU32ToFloat4(TagColor(Tag.c_str())), ImGuiColorEditFlags_NoTooltip, ImVec2(12, 12));
                 ImGui::SameLine(); ImGui::TextUnformatted(Tag.c_str());
             }
+            ImGui::SameLine(0, 18); ImGui::ColorButton("##free", ImGui::ColorConvertU32ToFloat4(IM_COL32(150, 150, 150, 255)), ImGuiColorEditFlags_NoTooltip, ImVec2(12, 12));
+            ImGui::SameLine(); ImGui::TextUnformatted("free");
             if (Total == 0) return;
 
-            // the canvas and its view: [m_MemTop, m_MemTop + 1 / m_MemZoom] of the whole (0..1) is shown
+            // the canvas: n columns of height H; the strip's pixel p is column p / H, row p % H; m_MemTop: the first byte shown (0..1)
             const ImVec2 C0 = ImGui::GetCursorScreenPos();
             const ImVec2 Size(std::max(ImGui::GetContentRegionAvail().x, 200.0f), std::max(ImGui::GetContentRegionAvail().y, 240.0f));
             ImGui::InvisibleButton("##memory", Size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-            const bool bHover = ImGui::IsItemHovered();
-            auto& IO = ImGui::GetIO();
+            const bool   bHover = ImGui::IsItemHovered();
+            auto&        IO     = ImGui::GetIO();
+            const int    nCols  = std::clamp(m_MemColumns, 1, 12);
+            const float  Gap    = 6, ColW = (Size.x - Gap * (nCols - 1)) / nCols, H = Size.y;
+            const double View   = double(nCols) * H;                                // the strip's pixels on screen
+            const auto   StripAt = [&](ImVec2 M) { const int c = std::clamp(int((M.x - C0.x) / (ColW + Gap)), 0, nCols - 1); return c * double(H) + std::clamp(double(M.y - C0.y), 0.0, double(H)); };
             if (bHover && IO.MouseWheel != 0)
             {
-                const double At = m_MemTop + (IO.MousePos.y - C0.y) / Size.y / m_MemZoom;          // the place under the mouse stays there
+                const double OldPx = View * m_MemZoom / double(Total);
+                const double At    = m_MemTop * double(Total) + StripAt(IO.MousePos) / OldPx;      // the byte under the mouse stays there
                 m_MemZoom = std::clamp(m_MemZoom * std::pow(1.25, IO.MouseWheel), 1.0, 1e6);
-                m_MemTop  = At - (IO.MousePos.y - C0.y) / Size.y / m_MemZoom;
+                m_MemTop  = (At - StripAt(IO.MousePos) / (View * m_MemZoom / double(Total))) / double(Total);
             }
-            if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0)) m_MemTop -= IO.MouseDelta.y / Size.y / m_MemZoom;
-            m_MemTop = std::clamp(m_MemTop, 0.0, 1.0 - 1.0 / m_MemZoom);
+            const double Px  = View * m_MemZoom / double(Total);                   // pixels per byte
+            if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0)) m_MemTop -= IO.MouseDelta.y / Px / double(Total);
+            m_MemTop = std::clamp(m_MemTop, 0.0, std::max(0.0, 1.0 - 1.0 / m_MemZoom));
+            const double TopB = m_MemTop * double(Total);
 
             auto* pDraw = ImGui::GetWindowDrawList();
             pDraw->PushClipRect(C0, ImVec2(C0.x + Size.x, C0.y + Size.y), true);
-            pDraw->AddRectFilled(C0, ImVec2(C0.x + Size.x, C0.y + Size.y), IM_COL32(30, 30, 34, 255));
-            const float  ColW = Size.x / 4;
-            const double Px   = Size.y * m_MemZoom / double(Total);             // pixels per byte
-            const double Top  = m_MemTop * double(Total);                       // the first byte shown
-            std::string  Hover;
-            // one box: its bytes [B0, B1) of the whole, in column c
-            const auto Box = [&](int c, double B0, double B1, ImU32 Col, const std::string& Label, const std::string& Tip)
+            for (int c = 0; c < nCols; ++c) { const float X = C0.x + c * (ColW + Gap); pDraw->AddRectFilled(ImVec2(X, C0.y), ImVec2(X + ColW, C0.y + H), IM_COL32(30, 30, 34, 255)); }
+            std::string Hover;
+            const auto Mb = [&](std::uint64_t Bytes) { char T[32]; std::snprintf(T, sizeof(T), "%.2f MB", Bytes * MB); return std::string(T); };
+
+            // bytes [B0, B1) of the strip: a box in each column it falls in, its label in its tallest piece
+            const auto Seg = [&](double B0, double B1, ImU32 Col, const std::string& Label, const std::string& Tip)
             {
-                const float Y0 = C0.y + float((B0 - Top) * Px), Y1 = C0.y + float((B1 - Top) * Px);
-                if (Y1 < C0.y || Y0 > C0.y + Size.y) return;
-                const float X0 = C0.x + c * ColW, X1 = X0 + ColW - 1;
-                pDraw->AddRectFilled(ImVec2(X0, Y0), ImVec2(X1, std::max(Y0 + 1.0f, Y1 - 1)), Col);
-                if (Y1 - Y0 >= 15)
+                const double P0 = (B0 - TopB) * Px, P1 = (B1 - TopB) * Px;
+                if (P1 < 0 || P0 >= View) return;
+                int Best = -1; float BestY0 = 0, BestY1 = 0;
+                for (int c = std::max(0, int(P0 / H)); c < nCols && c * double(H) < P1; ++c)
                 {
-                    pDraw->PushClipRect(ImVec2(X0, std::max(Y0, C0.y)), ImVec2(X1, std::min(Y1, C0.y + Size.y)), true);
-                    const float Lo = std::max(Y0, C0.y) + 1, Hi = std::max(Lo, std::min(Y1, C0.y + Size.y) - 15);     // (the label stays in the visible part)
-                    const float Ty = std::clamp((Y0 + Y1) * 0.5f - 7, Lo, Hi);
-                    pDraw->AddText(ImVec2(X0 + 6, Ty), IM_COL32(16, 16, 16, 255), Label.c_str());
+                    const float Y0 = C0.y + float(std::max(P0, c * double(H)) - c * double(H)), Y1 = C0.y + float(std::min(P1, (c + 1) * double(H)) - c * double(H));
+                    const float X0 = C0.x + c * (ColW + Gap), X1 = X0 + ColW;
+                    pDraw->AddRectFilled(ImVec2(X0, Y0), ImVec2(X1, std::max(Y0 + 1.0f, Y1 - (Y1 - Y0 > 3 ? 1.0f : 0.0f))), Col);
+                    if (Y1 - Y0 > BestY1 - BestY0) { Best = c; BestY0 = Y0; BestY1 = Y1; }
+                    if (bHover && IO.MousePos.x >= X0 && IO.MousePos.x < X1 && IO.MousePos.y >= Y0 && IO.MousePos.y < std::max(Y0 + 1.0f, Y1)) Hover = Tip;
+                }
+                if (Best >= 0 && BestY1 - BestY0 >= 15)
+                {
+                    const float X0 = C0.x + Best * (ColW + Gap);
+                    pDraw->PushClipRect(ImVec2(X0, BestY0), ImVec2(X0 + ColW, BestY1), true);
+                    pDraw->AddText(ImVec2(X0 + 6, (BestY0 + BestY1) * 0.5f - 7), IM_COL32(16, 16, 16, 255), Label.c_str());
                     pDraw->PopClipRect();
                 }
-                if (bHover && IO.MousePos.x >= X0 && IO.MousePos.x < X1 && IO.MousePos.y >= Y0 && IO.MousePos.y < std::max(Y0 + 1.0f, Y1)) Hover = Tip;
             };
-            const auto Mb = [&](std::uint64_t Bytes) { char T[32]; std::snprintf(T, sizeof(T), "%.2f MB", Bytes * MB); return std::string(T); };
-            const ImU32 Blue = IM_COL32(104, 152, 196, 255), Grey = IM_COL32(150, 150, 150, 255);
-
-            Box(0, 0, double(Total), Blue, "Memory: " + Mb(Total), "all the memory reported: " + Mb(Total));
-            double Pool0 = 0;
-            for (const auto& P : m_Mem)
+            // a region's start: a line across its column
+            const auto Line = [&](double B, ImU32 Col)
             {
-                Box(1, Pool0, Pool0 + double(P.m_Reserved), Blue, std::string(P.m_pName) + ": " + Mb(P.m_Reserved),
-                    std::string(P.m_pName) + "\n" + Mb(P.m_Used) + " used of " + Mb(P.m_Reserved) + " reserved, " + std::to_string(P.m_Regions.size()) + " regions");
-                double R0 = Pool0;
+                const double P = (B - TopB) * Px;
+                if (P < 0 || P >= View) return;
+                const int c = int(P / H); const float X0 = C0.x + c * (ColW + Gap), Y = C0.y + float(P - c * double(H));
+                pDraw->AddLine(ImVec2(X0, Y), ImVec2(X0 + ColW, Y), Col, 2.0f);
+            };
+
+            double R0 = 0;
+            for (const auto& P : m_Mem)
                 for (const auto& R : P.m_Regions)
                 {
                     const std::uint64_t RFree = R.m_Size - std::min(R.m_Used, R.m_Size);
-                    char Frag[160]; std::snprintf(Frag, sizeof(Frag), "region %llx: %zu allocations, %.2f MB free, largest hole %.2f MB, fragmentation %.0f%%",
-                        static_cast<unsigned long long>(R.m_Id), R.m_Allocs.size(), RFree * MB, R.m_LargestFree * MB, RFree ? 100.0 * (1.0 - double(R.m_LargestFree) / double(RFree)) : 0.0);
-                    Box(2, R0, R0 + double(R.m_Size), Blue, "region: " + Mb(R.m_Size), Frag);
+                    char Where[200]; std::snprintf(Where, sizeof(Where), "\n%s region %llx: %.2f MB, %zu allocations, %.2f MB free, largest hole %.2f MB, fragmentation %.0f%%",
+                        P.m_pName, static_cast<unsigned long long>(R.m_Id), R.m_Size * MB, R.m_Allocs.size(), RFree * MB, R.m_LargestFree * MB, RFree ? 100.0 * (1.0 - double(R.m_LargestFree) / double(RFree)) : 0.0);
                     std::uint64_t End = 0;
                     for (const auto& A : R.m_Allocs)
                     {
-                        if (A.m_Offset > End) Box(3, R0 + End, R0 + A.m_Offset, Grey, "FREE: " + Mb(A.m_Offset - End), "free: " + Mb(A.m_Offset - End));
+                        if (A.m_Offset > End) Seg(R0 + End, R0 + A.m_Offset, IM_COL32(150, 150, 150, 255), "FREE: " + Mb(A.m_Offset - End), "free: " + Mb(A.m_Offset - End) + Where);
                         const std::string Owner = A.m_pOwner ? A.m_pOwner : "(no owner)";
-                        Box(3, R0 + A.m_Offset, R0 + A.m_Offset + A.m_Size, TagColor(A.m_pTag ? A.m_pTag : "?"), Owner + ": " + Mb(A.m_Size),
-                            Owner + "\n" + (A.m_pTag ? A.m_pTag : "?") + ", " + Mb(A.m_Size) + " at " + Mb(A.m_Offset));
+                        Seg(R0 + A.m_Offset, R0 + A.m_Offset + A.m_Size, TagColor(A.m_pTag ? A.m_pTag : "?"), Owner + ": " + Mb(A.m_Size),
+                            Owner + "\n" + (A.m_pTag ? A.m_pTag : "?") + ", " + Mb(A.m_Size) + " at " + Mb(A.m_Offset) + Where);
                         End = std::max(End, A.m_Offset + A.m_Size);
                     }
-                    if (R.m_Size > End) Box(3, R0 + End, R0 + R.m_Size, Grey, "FREE: " + Mb(R.m_Size - End), "free: " + Mb(R.m_Size - End));
+                    if (R.m_Size > End) Seg(R0 + End, R0 + R.m_Size, IM_COL32(150, 150, 150, 255), "FREE: " + Mb(R.m_Size - End), "free: " + Mb(R.m_Size - End) + Where);
+                    Line(R0, IM_COL32(235, 235, 235, 255));
                     R0 += double(R.m_Size);
                 }
-                Pool0 += double(P.m_Reserved);
-            }
             pDraw->PopClipRect();
             if (!Hover.empty()) ImGui::SetTooltip("%s", Hover.c_str());
         }
@@ -257,6 +271,7 @@ namespace xprofile::editor
         int                     m_MemRefresh = 0;
         double                  m_MemZoom    = 1;       // the memory chart's view: 1 = all of it
         double                  m_MemTop     = 0;       // its first byte shown, 0..1 of all of it
+        int                     m_MemColumns = 4;       // the map's strip wrapped into this many columns
     #endif
         std::string             m_Select    {};             // a sub-tab to bring forward on the next Draw ("Metrics", "Memory": Profiler -Show)
         std::string             m_Viewer    {};
