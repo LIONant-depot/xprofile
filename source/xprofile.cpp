@@ -285,7 +285,8 @@ namespace xprofile
 
     namespace
     {
-        struct mem_alloc_rec  { std::uint64_t m_Size = 0; const char* m_pTag = nullptr; bool m_bTracy = false; };
+        struct mem_alloc_rec  { std::uint64_t m_Size = 0; const char* m_pTag = nullptr; const char* m_pOwner = nullptr; bool m_bTracy = false; };
+        thread_local const char*                    t_pMemOwner = nullptr;
         struct mem_region_rec { std::uint64_t m_Size = 0; std::map<std::uint64_t, mem_alloc_rec> m_Allocs; };
         struct mem_pool_rec   { std::uint64_t m_Used = 0, m_Peak = 0; std::map<std::uint64_t, mem_region_rec> m_Regions; };
         std::mutex                                  s_MemLock;
@@ -299,6 +300,9 @@ namespace xprofile
             if (A.m_bTracy) TracyFreeN(TracyAddress(Region, Offset), pPool);
         }
     }
+
+    void        SetMemOwner(const char* pName) noexcept { t_pMemOwner = pName ? InternName(pName) : nullptr; }
+    const char* getMemOwner(void) noexcept { return t_pMemOwner; }
 
     void MemRegion(const char* pPool, std::uint64_t Region, std::uint64_t Size) noexcept
     {
@@ -321,7 +325,7 @@ namespace xprofile
         auto& P = s_Mem[pPool];
         auto& A = P.m_Regions[Region].m_Allocs[Offset];
         if (A.m_Size) ForgetAlloc(pPool, P, Region, Offset, A);            // (a free never told: replaced)
-        A = { Size, pTag, s_bStarted.load() && isConnected() };
+        A = { Size, pTag, t_pMemOwner, s_bStarted.load() && isConnected() };
         if (A.m_bTracy) TracyAllocN(TracyAddress(Region, Offset), Size, pPool);
         P.m_Used += Size;
         P.m_Peak  = std::max(P.m_Peak, P.m_Used);
@@ -356,7 +360,7 @@ namespace xprofile
                 std::uint64_t End = 0;
                 for (auto& [Offset, A] : R.m_Allocs)
                 {
-                    OR.m_Allocs.push_back({ Offset, A.m_Size, A.m_pTag });
+                    OR.m_Allocs.push_back({ Offset, A.m_Size, A.m_pTag, A.m_pOwner });
                     OR.m_Used += A.m_Size;
                     if (Offset > End) OR.m_LargestFree = std::max(OR.m_LargestFree, Offset - End);
                     End = std::max(End, Offset + A.m_Size);

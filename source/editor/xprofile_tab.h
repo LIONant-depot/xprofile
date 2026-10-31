@@ -191,7 +191,7 @@ namespace xprofile::editor
                                 if (A.m_Offset + A.m_Size <= At) HoleLo = std::max(HoleLo, A.m_Offset + A.m_Size);
                                 else if (A.m_Offset > At) { HoleHi = std::min(HoleHi, A.m_Offset); }
                             }
-                            if (pHit) ImGui::SetTooltip("%s\noffset %.2f MB, %.3f MB", pHit->m_pTag ? pHit->m_pTag : "?", pHit->m_Offset * MB, pHit->m_Size * MB);
+                            if (pHit) ImGui::SetTooltip("%s\n%s\noffset %.2f MB, %.3f MB", pHit->m_pOwner ? pHit->m_pOwner : "(no owner)", pHit->m_pTag ? pHit->m_pTag : "?", pHit->m_Offset * MB, pHit->m_Size * MB);
                             else      ImGui::SetTooltip("free: %.3f MB (offset %.2f .. %.2f MB)", (HoleHi - HoleLo) * MB, HoleLo * MB, HoleHi * MB);
                         }
                     }

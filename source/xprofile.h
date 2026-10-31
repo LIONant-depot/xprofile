@@ -120,7 +120,17 @@
         XPROFILE_API void   MemRegion   ( const char* pPool, std::uint64_t Region, std::uint64_t Size ) noexcept;     // Size 0: the region goes, with what is left in it
         XPROFILE_API void   MemAlloc    ( const char* pPool, std::uint64_t Region, std::uint64_t Offset, std::uint64_t Size, const char* pTag ) noexcept;
         XPROFILE_API void   MemFree     ( const char* pPool, std::uint64_t Region, std::uint64_t Offset ) noexcept;
-        struct mem_alloc  { std::uint64_t m_Offset = 0, m_Size = 0; const char* m_pTag = nullptr; };
+        // Who allocates: a name for this thread's allocations while the scope lives (nested scopes: the innermost) - a resource's load sets
+        // "Texture 5E1CE0A110000007" so the memory it makes says whose it is
+        XPROFILE_API void        SetMemOwner ( const char* pName ) noexcept;            // (interned here; nullptr: none)
+        XPROFILE_API const char* getMemOwner ( void ) noexcept;
+        struct mem_owner_scope
+        {
+            explicit mem_owner_scope( const char* pName ) noexcept : m_pPrev{ getMemOwner() } { SetMemOwner(pName); }
+            ~mem_owner_scope( void ) noexcept { SetMemOwner(m_pPrev); }
+            const char* m_pPrev;
+        };
+        struct mem_alloc  { std::uint64_t m_Offset = 0, m_Size = 0; const char* m_pTag = nullptr; const char* m_pOwner = nullptr; };
         struct mem_region
         {
             std::uint64_t           m_Id = 0, m_Size = 0, m_Used = 0;
@@ -200,6 +210,7 @@
     #define XPROFILE_MEM_REGION(POOL, REGION, SIZE)                 ::xprofile::MemRegion(POOL, REGION, SIZE)
     #define XPROFILE_MEM_ALLOC(POOL, REGION, OFFSET, SIZE, TAG)     ::xprofile::MemAlloc(POOL, REGION, OFFSET, SIZE, TAG)
     #define XPROFILE_MEM_FREE(POOL, REGION, OFFSET)                 ::xprofile::MemFree(POOL, REGION, OFFSET)
+    #define XPROFILE_MEM_OWNER(NAME)                                ::xprofile::mem_owner_scope XPROFILE_CAT(xprofile_owner_, __LINE__)(NAME)
     // a place for xprofile::sequence::Next (a static location: the name a literal)
     #define XPROFILE_LOCATION(NAME)             ([]() noexcept -> const ::xprofile::location* { static const ::xprofile::location* const L = ::xprofile::Intern(NAME, __FUNCTION__, __FILE__, static_cast<std::uint32_t>(__LINE__)); return L; }())
     #define XPROFILE_GPU_SCOPE(TARGET, NAME)    ::xprofile::gpu_scope XPROFILE_CAT(xprofile_gpu_, __LINE__)(TARGET, XPROFILE_LOCATION(NAME))
@@ -230,6 +241,7 @@
     #define XPROFILE_MEM_REGION(POOL, REGION, SIZE)                 do {} while (0)
     #define XPROFILE_MEM_ALLOC(POOL, REGION, OFFSET, SIZE, TAG)     do {} while (0)
     #define XPROFILE_MEM_FREE(POOL, REGION, OFFSET)                 do {} while (0)
+    #define XPROFILE_MEM_OWNER(NAME)                                do {} while (0)
 
 #endif
 #endif
