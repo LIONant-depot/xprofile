@@ -97,6 +97,12 @@ namespace xprofile
         return p;
     }
 
+    namespace
+    {
+        thread_local std::string    t_ThreadName;
+        thread_local bool           t_bTracyHasName = false;
+    }
+
     void SetThreadName(const char* pName) noexcept
     {
         // the OS name always (debuggers; Tracy reads it for threads named before it started), Tracy's own once it runs
@@ -110,7 +116,11 @@ namespace xprofile
         for (int i = 0; i < 15 && pName[i]; ++i) Short[i] = pName[i];
         pthread_setname_np(pthread_self(), Short);
     #endif
-        if (s_bStarted.load()) tracy::SetThreadName(pName);
+        // Tracy's own list only takes names once its client runs: a thread named before (xscheduler's workers start with the engine)
+        // keeps its name and hands it over at its first zone after the start (RecordZone)
+        t_ThreadName = pName;
+        t_bTracyHasName = s_bStarted.load();
+        if (t_bTracyHasName) tracy::SetThreadName(pName);
     }
 
     //------------------------------------------------------------------------------
@@ -143,6 +153,7 @@ namespace xprofile
     void RecordZone(const location* pWhere, std::int64_t StartNs, std::int64_t EndNs) noexcept
     {
         if (!pWhere) return;
+        if (!t_bTracyHasName && !t_ThreadName.empty() && s_bStarted.load()) { tracy::SetThreadName(t_ThreadName.c_str()); t_bTracyHasName = true; }
         if (!t_pRing)
         {
             std::lock_guard Lk(s_RingsLock);
