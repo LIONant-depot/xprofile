@@ -108,6 +108,11 @@ namespace xprofile::editor
                     if (U.m_Limit > 0) std::snprintf(Overlay, sizeof(Overlay), "%s: %.2f  (%.2f .. %.2f)  max %.0f: %.0f%%", P.m_pName, P.m_Last, P.m_Min, P.m_Max, U.m_Limit, 100.0 * P.m_Last / U.m_Limit);
                     else               std::snprintf(Overlay, sizeof(Overlay), "%s: %.2f  (%.2f .. %.2f)", P.m_pName, P.m_Last, P.m_Min, P.m_Max);
                     ImGui::PlotLines("##plot", P.m_History.data(), static_cast<int>(P.m_History.size()), 0, Overlay, Lo, Hi, ImVec2(-1, 40));
+                    if (ImGui::IsItemHovered())             // (the numbers and the share of the maximum together)
+                    {
+                        if (U.m_Limit > 0) ImGui::SetTooltip("%s\nnow %.2f of %.2f max: %.1f%%\nrange shown %.2f .. %.2f", P.m_pName, P.m_Last, U.m_Limit, 100.0 * P.m_Last / U.m_Limit, P.m_Min, P.m_Max);
+                        else               ImGui::SetTooltip("%s\nnow %.2f\nrange shown %.2f .. %.2f (no maximum declared)", P.m_pName, P.m_Last, P.m_Min, P.m_Max);
+                    }
                     ImGui::PopID();
                 }
                 ImGui::EndTable();
