@@ -414,6 +414,31 @@ namespace xprofile
     void MemCounters(std::vector<mem_counter>& Out) noexcept
     {
         Out.clear();
+    #if defined(_WIN32)
+        // the process heap (the C runtime's malloc/new of every module): what is allocated in it, and what it holds committed - the
+        // difference is freed memory it keeps for reuse (private bytes count it; no object owns it)
+        HEAP_SUMMARY H{ .cb = sizeof(H) };
+        if (HeapSummary(GetProcessHeap(), 0, &H))
+        {
+            Out.push_back({ InternName("Process heap: allocated (every module's malloc/new)"), static_cast<std::int64_t>(H.cbAllocated), 0 });
+            Out.push_back({ InternName("Process heap: committed (allocated + kept free for reuse)"), static_cast<std::int64_t>(H.cbCommitted), 0 });
+        }
+        // the other heaps (HeapCreate: the GPU driver's, libraries'), and what private memory is outside every heap (VirtualAlloc: driver
+        // arenas, thread stacks, mapped images' writable pages)
+        HANDLE Heaps[256]; const DWORD nHeaps = GetProcessHeaps(256, Heaps);
+        std::int64_t Other = 0, AllHeaps = 0;
+        for (DWORD i = 0; i < std::min<DWORD>(nHeaps, 256); ++i)
+        {
+            HEAP_SUMMARY S{ .cb = sizeof(S) };
+            if (!HeapSummary(Heaps[i], 0, &S)) continue;
+            AllHeaps += static_cast<std::int64_t>(S.cbCommitted);
+            if (Heaps[i] != GetProcessHeap()) Other += static_cast<std::int64_t>(S.cbCommitted);
+        }
+        Out.push_back({ InternName("Other heaps: committed (the driver's, libraries')"), Other, static_cast<std::int64_t>(nHeaps) - 1 });
+        PROCESS_MEMORY_COUNTERS_EX P{};
+        if (K32GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&P), sizeof(P)))
+            Out.push_back({ InternName("Private memory outside every heap (VirtualAlloc: driver arenas, stacks)"), static_cast<std::int64_t>(P.PrivateUsage) - AllHeaps, 0 });
+    #endif
         std::lock_guard Lk(s_MemLock);
         for (auto& [p, C] : s_Counters) Out.push_back(C);
     }
