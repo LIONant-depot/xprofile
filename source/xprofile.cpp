@@ -10,6 +10,7 @@
 #include <map>
 #include <tuple>
 #include <string_view>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <mutex>
@@ -20,7 +21,9 @@
         #define NOMINMAX
     #endif
     #include <windows.h>
+    #include <psapi.h>                  // (K32GetProcessMemoryInfo: kernel32)
 #else
+    #include <sys/sysinfo.h>
     #include <pthread.h>
     #include <sys/wait.h>
     #include <unistd.h>
@@ -366,11 +369,53 @@ namespace xprofile
         s_Spaces[pSpace] = { pSpace, Size, Budget, Usage };
     }
 
+    // System RAM as the OS sees it: the physical RAM, this process's private bytes (usage) and, as its budget, that plus what is available
+    // now (the rest: other processes, the OS) - the driver's view of it counts only GPU allocations
+    static mem_space SystemRAM(void) noexcept
+    {
+        mem_space S{ InternName("System RAM") };
+    #if defined(_WIN32)
+        MEMORYSTATUSEX M{ .dwLength = sizeof(M) };
+        PROCESS_MEMORY_COUNTERS_EX P{};
+        if (GlobalMemoryStatusEx(&M) && K32GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&P), sizeof(P)))
+        {
+            S.m_Size = M.ullTotalPhys; S.m_Usage = P.PrivateUsage; S.m_Budget = std::min<std::uint64_t>(M.ullTotalPhys, P.PrivateUsage + M.ullAvailPhys);
+        }
+    #else
+        struct sysinfo I{};
+        long Pages = 0, Resident = 0;
+        if (sysinfo(&I) == 0)
+            if (std::FILE* f = std::fopen("/proc/self/statm", "r")) { if (std::fscanf(f, "%ld %ld", &Pages, &Resident) != 2) Resident = 0; std::fclose(f); }
+        const std::uint64_t Unit = I.mem_unit ? I.mem_unit : 1, Page = static_cast<std::uint64_t>(sysconf(_SC_PAGESIZE));
+        S.m_Size = I.totalram * Unit; S.m_Usage = static_cast<std::uint64_t>(Resident) * Page; S.m_Budget = std::min<std::uint64_t>(S.m_Size, S.m_Usage + I.freeram * Unit);
+    #endif
+        return S;
+    }
+
     void MemSpaces(std::vector<mem_space>& Out) noexcept
     {
         Out.clear();
+        {
+            std::lock_guard Lk(s_MemLock);
+            for (auto& [p, S] : s_Spaces) if (std::string_view(p) != "System RAM") Out.push_back(S);
+        }
+        Out.push_back(SystemRAM());
+    }
+
+    namespace { std::map<const char*, mem_counter> s_Counters; }           // by interned name (s_MemLock)
+
+    void MemCounter(const char* pName, std::int64_t Bytes, std::int64_t Count) noexcept
+    {
+        pName = InternName(pName);
         std::lock_guard Lk(s_MemLock);
-        for (auto& [p, S] : s_Spaces) Out.push_back(S);
+        s_Counters[pName] = { pName, Bytes, Count };
+    }
+
+    void MemCounters(std::vector<mem_counter>& Out) noexcept
+    {
+        Out.clear();
+        std::lock_guard Lk(s_MemLock);
+        for (auto& [p, C] : s_Counters) Out.push_back(C);
     }
 
     void MemSnapshot(std::vector<mem_pool>& Out) noexcept

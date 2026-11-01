@@ -149,7 +149,11 @@
         // process uses of it (0: not known) - the maps span all of it, not only what the pools reserved
         struct mem_space  { const char* m_pName = nullptr; std::uint64_t m_Size = 0, m_Budget = 0, m_Usage = 0; };
         XPROFILE_API void   MemSpace    ( const char* pSpace, std::uint64_t Size, std::uint64_t Budget, std::uint64_t Usage ) noexcept;
-        XPROFILE_API void   MemSpaces   ( std::vector<mem_space>& Out ) noexcept;
+        XPROFILE_API void   MemSpaces   ( std::vector<mem_space>& Out ) noexcept;      // ("System RAM" from the OS: physical RAM, this process's private bytes)
+        // A count kept elsewhere (an allocator's bytes and blocks: the editor's new/delete) - totals, no map
+        struct mem_counter { const char* m_pName = nullptr; std::int64_t m_Bytes = 0, m_Count = 0; };
+        XPROFILE_API void   MemCounter  ( const char* pName, std::int64_t Bytes, std::int64_t Count ) noexcept;
+        XPROFILE_API void   MemCounters ( std::vector<mem_counter>& Out ) noexcept;
 
         // A zone: Tracy's (sent while a viewer is connected) and the recorder's (the start and end times while enabled)
         struct scope

@@ -156,6 +156,11 @@ namespace xprofile::editor
                     std::vector<mem_space> Spaces; MemSpaces(Spaces);
                     const mem_space* pSpace = nullptr;
                     for (const auto& S : Spaces) if (std::string_view(S.m_pName) == pSpace_Name(Space)) { m_Spaces[Space] = S; pSpace = &m_Spaces[Space]; }
+                    if (Space == 1)                     // the counts kept elsewhere (an allocator's bytes and blocks: the editor's new/delete)
+                    {
+                        std::vector<mem_counter> Counters; MemCounters(Counters);
+                        for (const auto& C : Counters) ImGui::Text("%s: %.1f MB in %lld blocks (counted, not mapped)", C.m_pName, C.m_Bytes / (1024.0 * 1024.0), static_cast<long long>(C.m_Count));
+                    }
                     if (Pools.empty() && !pSpace) ImGui::TextDisabled("Nothing reported in this memory yet.");
                     else DrawMemoryMap(Pools, m_MemView[Space], pSpace);
                     ImGui::EndTabItem();
@@ -198,7 +203,7 @@ namespace xprofile::editor
                 Total          = Reserved + OtherOfProcess + FreeForUs + NotForUs;
                 ImGui::Text("%s: %.2f GB in all; this process uses %.2f GB (%.1f MB through these pools, %.1f MB other), its budget %.2f GB: %.2f GB free for it, %.2f GB not available (other processes, the OS)%s",
                     pSpace->m_pName, pSpace->m_Size * MB / 1024, Usage * MB / 1024, Reserved * MB, OtherOfProcess * MB, std::min(pSpace->m_Budget, pSpace->m_Size) * MB / 1024, FreeForUs * MB / 1024, NotForUs * MB / 1024,
-                    !pSpace->m_Usage ? " (the driver gives no usage: VK_EXT_memory_budget missing)" : std::string_view(pSpace->m_pName) == "VRAM" ? "" : " - the driver counts only GPU allocations here, not the process's own RAM");
+                    !pSpace->m_Usage ? " (the driver gives no usage: VK_EXT_memory_budget missing)" : std::string_view(pSpace->m_pName) == "VRAM" ? "" : " (the OS: physical RAM, this process's private bytes)");
             }
             if (ImGui::Button("Fit")) { V.m_Zoom = 1; V.m_Top = 0; }
             ImGui::SameLine(); ImGui::SetNextItemWidth(90); ImGui::SliderInt("columns", &V.m_Columns, 1, 12);
