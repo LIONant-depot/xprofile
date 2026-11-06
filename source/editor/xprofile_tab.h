@@ -72,7 +72,7 @@ namespace xprofile::editor
             }
 
             // the zones: per frame of the window
-            const double nFrames = std::max<std::size_t>(F.size(), 1);
+            const double nFrames = double(std::max<std::size_t>(F.size(), 1));
             if (ImGui::BeginTable("##zones", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable, ImVec2(0, 260)))
             {
                 ImGui::TableSetupScrollFreeze(0, 1);
